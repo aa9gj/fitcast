@@ -80,6 +80,30 @@ max_jobs: 10
 # Comment out (or remove) to disable the date filter.
 # posted_within_hours: 48
 
+# ─── Location filter (optional) ──────────────────────────────────────────
+# Substring matching on the job's location field (case-insensitive).
+# Rules:
+#   - `exclude` wins: any match drops the job
+#   - `include` (if set): at least one match required
+#   - both empty / block commented out = no location filtering
+# location_filter:
+#   include:
+#     - remote
+#     - hybrid
+#     - united states
+#     - usa
+#     - us
+#   exclude:
+#     - india
+#     - philippines
+
+# ─── Salary filter (optional) ────────────────────────────────────────────
+# Drops jobs whose max stated annual salary (extracted via regex from
+# posting text) falls below the threshold. Postings with no salary
+# mentioned PASS THROUGH (we don't penalize non-disclosing companies).
+# salary_filter:
+#   min_total_compensation: 100000  # USD per year
+
 # Optional cheap pre-rank pass with Haiku 4.5 (~$0.0007 per candidate).
 # When enabled, every candidate gets a quick relevance score and only the
 # top max_jobs are deep-analyzed. Lets you scan a much larger pool for a

@@ -725,6 +725,89 @@ def matches_keywords(job: dict, keywords: list[str]) -> bool:
     return any(kw.lower() in haystack for kw in keywords)
 
 
+def matches_location(job: dict, location_filter: dict | None) -> bool:
+    """Apply location include/exclude rules. Free-form substring matching on
+    the job's location field, case-insensitive.
+
+    Rules:
+      - exclude wins: if any exclude term matches, drop the job
+      - then include (if any): at least one include term must match
+      - empty/None filter = pass everything
+    """
+    if not location_filter:
+        return True
+    location = (job.get("location") or "").lower()
+
+    excludes = [s.lower() for s in (location_filter.get("exclude") or [])]
+    if location and any(ex in location for ex in excludes):
+        return False
+
+    includes = [s.lower() for s in (location_filter.get("include") or [])]
+    if includes:
+        return any(inc in location for inc in includes)
+    return True
+
+
+# Salary patterns we recognize in posting text. Tries to be conservative —
+# better to miss some than to misfire on, say, equity numbers or revenue
+# stats mentioned in company descriptions.
+_SALARY_FULL_RE = re.compile(
+    r'\$\s?(\d{1,3}(?:,\d{3})+)(?!\.\d)',  # e.g., $120,000 or $1,250,000
+)
+_SALARY_K_RE = re.compile(
+    r'\$\s?(\d{2,3}(?:\.\d+)?)\s?[Kk](?![a-zA-Z])',  # e.g., $120k or $120K
+)
+
+
+def extract_salaries(text: str) -> list[int]:
+    """Extract plausible USD annual salary figures from text.
+
+    Looks for:
+      - $X,XXX[,XXX] patterns (always)
+      - $XXk patterns (e.g., $120k → 120000)
+
+    Filters out values outside [$30K, $2M] — anything else is unlikely
+    to be an annual base salary (probably hourly rates, totals, etc.).
+    """
+    out: list[int] = []
+    for m in _SALARY_FULL_RE.finditer(text):
+        try:
+            n = int(m.group(1).replace(",", ""))
+        except (ValueError, TypeError):
+            continue
+        if 30_000 <= n <= 2_000_000:
+            out.append(n)
+    for m in _SALARY_K_RE.finditer(text):
+        try:
+            n = int(float(m.group(1)) * 1000)
+        except (ValueError, TypeError):
+            continue
+        if 30_000 <= n <= 2_000_000:
+            out.append(n)
+    return out
+
+
+def matches_salary(job: dict, salary_filter: dict | None) -> bool:
+    """Check if the job's stated salary clears the configured minimum.
+
+    Jobs with no salary mentioned in the title or posting body PASS THROUGH
+    — we don't penalize companies that simply don't disclose salaries.
+    Use the MAX salary mentioned (typically the top of a range), since
+    that's the most generous interpretation of what the company is offering.
+    """
+    if not salary_filter:
+        return True
+    min_amount = salary_filter.get("min_total_compensation")
+    if not min_amount:
+        return True
+
+    text = (job.get("title", "") + " " + job.get("content_html", ""))
+    salaries = extract_salaries(text)
+    if not salaries:
+        return True  # not mentioned → pass through
+    return max(salaries) >= int(min_amount)
+
+
 def _parallel_fetch(label: str, slugs: list[str], fetch_fn) -> list[dict]:
     """Run fetch_fn(slug) in parallel for all slugs. Returns flattened job list."""
     if not slugs:
@@ -785,6 +868,25 @@ def scrape_jobs(config: dict, client: anthropic.Anthropic, resume: str,
         filtered = [j for j in filtered if j.get("posted_at") and j["posted_at"] >= cutoff]
         print(
             f"  date filter (last {posted_within_hours}h): {before} -> {len(filtered)}",
+            file=sys.stderr,
+        )
+
+    location_filter = config.get("location_filter")
+    if location_filter:
+        before = len(filtered)
+        filtered = [j for j in filtered if matches_location(j, location_filter)]
+        print(
+            f"  location filter: {before} -> {len(filtered)}",
+            file=sys.stderr,
+        )
+
+    salary_filter = config.get("salary_filter")
+    if salary_filter and salary_filter.get("min_total_compensation"):
+        before = len(filtered)
+        filtered = [j for j in filtered if matches_salary(j, salary_filter)]
+        min_amt = salary_filter["min_total_compensation"]
+        print(
+            f"  salary filter (>= ${min_amt:,} or unstated): {before} -> {len(filtered)}",
             file=sys.stderr,
         )
 

@@ -33,6 +33,62 @@ python extract_keywords.py
 
 Outputs a YAML block with profile summary, target roles, and recommended keywords aligned to your background. Copy the `keywords:` portion into config.yaml.
 
+## Filter by location
+
+Substring matching on the job's `location` field (case-insensitive). Two rule lists:
+
+```yaml
+location_filter:
+  include:           # OR — at least one must match
+    - remote
+    - hybrid
+    - united states
+    - usa
+  exclude:           # AND — any match drops the job
+    - india
+    - philippines
+```
+
+**Rules:**
+- `exclude` wins: if any exclude term matches, the job is dropped (even if it also matches an include)
+- `include` (if non-empty): at least one include term must match
+- Comment out the whole block (or leave both lists empty) to disable
+
+**Caveats** — location strings come from each source as free-form text:
+- Greenhouse: `"San Francisco, CA"`, `"Remote — US"`, `"Multiple Locations"`
+- Lever: `"Paris"`, `"Remote – Americas"`
+- Ashby: `"Remote"`, `"New York, NY"`
+- The Muse: `"Flexible / Remote"`
+
+So your include/exclude terms should be substrings that actually appear in these strings. `remote`, `usa`, `united states`, specific city names work well. Country codes like `us` will also match `Austin` or `Houston` — be careful with very short substrings.
+
+## Filter by salary
+
+```yaml
+salary_filter:
+  min_total_compensation: 100000   # USD per year
+```
+
+How it works:
+- Regex-scans the posting title + body for dollar amounts (e.g. `$120,000`, `$150k`, `$90K - $130K`)
+- If any are found, uses the **max** value (typically the top of a range — generous interpretation)
+- If max < threshold → dropped
+- If no salary mentioned anywhere → **pass through** (don't penalize companies that don't disclose)
+
+**Caveats:**
+- USD-only. Postings in other currencies won't have their numbers matched.
+- The regex is conservative: it only matches `$X,XXX[,XXX]` and `$XXk` patterns, filtered to the $30K–$2M range. Numbers outside that range (hourly rates, valuation figures, equity totals) are skipped.
+- Salaries embedded in tables that markdown can't preserve will be invisible. Run `python check_resume_format.py` on a sample posting if you suspect extraction issues.
+- Not every posting has salary at all. Most Greenhouse/Lever/Ashby boards don't include it. The Muse sometimes does. **Default behavior of "pass through if missing" is conservative** — you'll still see jobs that don't disclose. Set the filter only if you'd rather skip those entirely (delete the `salary_filter` block and the script keeps everything).
+
+To test what your filter catches, run with `--dry-run`:
+
+```bash
+python pipeline.py --dry-run
+```
+
+The stderr will report `salary filter (>= $100,000 or unstated): 542 -> 287`. If the drop is unexpectedly large, your minimum may be too aggressive.
+
 ## Pre-rank a larger pool with cheap Haiku
 
 ```yaml
