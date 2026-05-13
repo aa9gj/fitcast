@@ -92,7 +92,96 @@ For context: LinkedIn Premium Career is $40/month; most "AI resume tailoring" Sa
 
 `results.json` has the same data plus:
 - Full posting text (used by `tailor.py` and `audit.py`)
-- A `requirements_evidence` array — one entry per requirement with `met`, `confidence`, and a specific quote/reference from your resume. Use [`audit.py`](#audit-a-jobs-score) to print this in human-readable form.
+- A `requirements_evidence` array — one entry per requirement with `met`, `confidence`, and a specific quote/reference from your resume
+- `score_components`, `ats_components`, `breakdown` — the inputs that produced each score (see [How scoring works](#how-scoring-works))
+
+Use [`audit.py`](#audit-a-jobs-score) to print all of this human-readably for any job.
+
+## How scoring works
+
+Each job gets **four scores**. Three are *derived deterministically* from Claude's extraction — the math is auditable, not a black-box vibe number. The fourth uses local embeddings. Claude's role is extraction (find requirements, judge each one, list keywords); the pipeline does the arithmetic.
+
+### 1. Pre-rank score (0–10, Haiku 4.5 — LLM judgment)
+
+A cheap one-shot relevance score generated *before* the expensive deep analysis. Asks: "given the candidate's resume, how plausibly relevant is this job at all?"
+
+- **0–3**: clearly unrelated
+- **4–6**: tangentially related — maybe worth considering
+- **7–10**: clearly relevant
+
+Only jobs scoring ≥ `prerank.threshold` (default 5) survive to deep analysis. Raise the threshold to 7+ if you're seeing too many irrelevant jobs in your `results.csv`.
+
+This is the one score still pure LLM judgment, because it runs on 100+ candidates and needs to be cheap.
+
+### 2. Qualification score (0–100, derived from evidence)
+
+Claude extracts per-requirement evidence and quantitative inputs; the pipeline DERIVES the score using a transparent formula:
+
+```
+base_score = (requirements_met / requirements_total) × 100
+
+degree_penalty = -30 if resume degree is below the posting's requirement, else 0
+years_penalty  = -5 per year short on experience, capped at -30
+
+score = clamp(base_score + degree_penalty + years_penalty, 0, 100)
+verdict = "qualified" if score >= 90 else "stretch" if score >= 60 else "not_qualified"
+```
+
+Every input is in `results.json` under `score_components` and `breakdown`:
+
+| Field | Example |
+|---|---|
+| `requirements_met` / `requirements_total` | 5 / 9 |
+| `met_ratio` | 0.56 |
+| `base_score` | 56 |
+| `years_required` / `years_resume_estimated` | 5 / 3 |
+| `years_penalty` | -10 |
+| `degree_required` / `degree_resume` / `degree_match` | "PhD" / "PhD" / "meets_or_exceeds" |
+| `degree_penalty` | 0 |
+| Final `score` | 46 → `stretch` |
+
+You can hand-check any score: "5/9 = 56 base, minus 10 for years, equals 46 → stretch." Run `python audit.py <url>` to print this breakdown for any job.
+
+### 3. ATS score (0–100, derived from keyword extraction)
+
+Claude extracts which of the posting's important keywords DO and DON'T appear in your resume. The pipeline computes:
+
+```
+ats_score = (keywords_matched / (keywords_matched + keyword_gaps)) × 100
+            - 5 × format_warnings_count
+```
+
+This is closer to what real ATS systems actually do (exact keyword matching with skill normalization) than asking an LLM to estimate vocabulary similarity. The math is in `results.json` under `ats_components`.
+
+### 4. Domain fit score (0–100, embedding similarity — optional)
+
+Cosine similarity between [sentence-transformer](https://www.sbert.net/) embeddings of your resume and the job posting, scaled to 0–100. Captures *topical* similarity even when specific keywords differ ("data pipelines" ≈ "ETL workflows" ≈ "data flow infrastructure").
+
+Requires `sentence-transformers` installed (~500MB; included in `requirements.txt` by default — comment out the line to skip the install). When the dep is missing, `domain_fit_score` is simply omitted from results.
+
+### Why four different angles?
+
+The scores measure different things and can diverge — that's a feature, not a bug:
+
+- **High qualification, low ATS**: you've done the work but your resume uses different vocabulary than the posting. **Fix:** `python tailor.py`.
+- **High ATS, low qualification**: your resume keyword-matches but you don't have the actual experience. Tailoring won't help — be honest about your level.
+- **High domain fit, low qualification**: this is your *field* but not this specific role. Could indicate a good company to target with different roles.
+- **All four high**: clear apply.
+
+### Per-requirement evidence (the foundation)
+
+For every requirement found in the posting, `results.json` contains:
+
+| Field | Meaning |
+|---|---|
+| `requirement` | Short paraphrase of what the posting asked for |
+| `met` | `true` if your resume clearly demonstrates it, `false` otherwise |
+| `confidence` | How clearly the resume supports the assessment: `high` (explicit), `medium` (inferred from adjacent experience), `low` (ambiguous — consider clarifying your resume here) |
+| `evidence` | The specific quote or reference from your resume that supports the judgment, or "not mentioned in resume" / "resume shows 3 yrs vs 5+ required" for unmet requirements |
+
+The `met` field directly drives the qualification score (via `met_ratio`). `confidence: low` entries are good candidates to clarify in your resume.
+
+Run `python audit.py <url>` for any job to see the per-requirement evidence AND the full score derivation in one place.
 
 ## Customize
 

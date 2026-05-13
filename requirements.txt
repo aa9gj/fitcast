@@ -2,3 +2,8 @@ anthropic>=0.92.0
 pydantic>=2.0
 requests>=2.28
 pyyaml>=6.0
+
+# Optional: enables the domain_fit_score (resume × posting embedding cosine
+# similarity). Adds ~500MB of deps (PyTorch + transformers). Comment out to
+# skip — pipeline runs fine without it; domain_fit_score will just be empty.
+sentence-transformers>=2.2.0
