@@ -12,6 +12,7 @@ Usage:
 
 from __future__ import annotations
 
+import argparse
 import csv
 import json
 import os
@@ -550,6 +551,24 @@ def analyze_job(client: anthropic.Anthropic, resume: str, job: dict) -> tuple[Jo
 # ──────────────────────────────── Main ──────────────────────────────────────
 
 def main() -> None:
+    ap = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    ap.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Scrape, filter, and pre-rank — but don't deep-analyze. "
+             "Useful for testing config changes without spending on Sonnet calls.",
+    )
+    ap.add_argument(
+        "--max-jobs",
+        type=int,
+        default=None,
+        help="Override config.yaml's max_jobs (how many to deep-analyze).",
+    )
+    args = ap.parse_args()
+
     if not os.environ.get("ANTHROPIC_API_KEY"):
         sys.exit("Error: ANTHROPIC_API_KEY environment variable not set.")
     if not RESUME_PATH.exists():
@@ -558,6 +577,8 @@ def main() -> None:
         sys.exit(f"Error: {CONFIG_PATH} not found.")
 
     config = yaml.safe_load(CONFIG_PATH.read_text()) or {}
+    if args.max_jobs is not None:
+        config["max_jobs"] = args.max_jobs
     resume = RESUME_PATH.read_text().strip()
     if not resume:
         sys.exit(f"Error: {RESUME_PATH} is empty.")
@@ -579,6 +600,14 @@ def main() -> None:
             "No jobs matched. Try broadening keywords, raising posted_within_hours, "
             "lowering prerank.threshold, or adding sources in config.yaml."
         )
+
+    if args.dry_run:
+        print("Dry run — skipping deep analysis. Selected jobs:\n", file=sys.stderr)
+        for j in jobs:
+            prerank = j.get("prerank_score")
+            ps = f" (prerank {prerank}/10)" if prerank is not None else ""
+            print(f"  [{j.get('source','?')}]{ps} {j['title']} @ {j['company']}\n      {j.get('url','')}", file=sys.stderr)
+        sys.exit(0)
 
     results: list[dict] = []
 
