@@ -38,6 +38,7 @@ RESUME_PATH = ROOT / "resume.md"
 RESULTS_CSV = ROOT / "results.csv"
 RESULTS_JSON = ROOT / "results.json"
 APPLIED_PATH = ROOT / "applied.json"
+SEEN_PATH = ROOT / "seen.json"
 BOOTSTRAP_PATH = ROOT / "companies.bootstrap.yaml"
 
 # Sonnet 4.6 is the default for deep analysis. Sonnet does requirements +
@@ -54,6 +55,8 @@ PRERANK_MODEL = "claude-haiku-4-5"
 EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 
 GREENHOUSE_BASE = "https://boards-api.greenhouse.io/v1/boards"
+LEVER_BASE = "https://api.lever.co/v0/postings"
+ASHBY_BASE = "https://api.ashbyhq.com/posting-api/job-board"
 MUSE_BASE = "https://www.themuse.com/api/public/jobs"
 
 
@@ -452,6 +455,76 @@ def fetch_greenhouse_jobs(slug: str) -> list[dict]:
     return jobs
 
 
+# ─────────────────────────── Source: Lever ──────────────────────────────────
+
+def fetch_lever_jobs(slug: str) -> list[dict]:
+    """Fetch all jobs from one Lever public board (returns JSON array)."""
+    url = f"{LEVER_BASE}/{slug}"
+    try:
+        resp = requests.get(url, params={"mode": "json"}, timeout=20)
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        if status != 404:
+            print(f"  ! lever/{slug}: {exc}", file=sys.stderr)
+        return []
+    data = resp.json()
+    jobs = []
+    for j in data:
+        # Lever createdAt is a unix-millisecond timestamp.
+        created_ms = j.get("createdAt")
+        posted_at = None
+        if isinstance(created_ms, (int, float)):
+            try:
+                posted_at = datetime.fromtimestamp(created_ms / 1000, tz=timezone.utc)
+            except (ValueError, OSError):
+                posted_at = None
+        location = (j.get("categories") or {}).get("location", "")
+        # Lever has both `description` (HTML) and `descriptionPlain`. Use HTML
+        # to be consistent with Greenhouse/Ashby; html_to_text handles both.
+        content_html = j.get("description") or j.get("descriptionPlain") or ""
+        jobs.append({
+            "source": "lever",
+            "id": str(j.get("id", "")),
+            "title": j.get("text", ""),
+            "company": slug,
+            "location": location,
+            "url": j.get("hostedUrl", ""),
+            "content_html": content_html,
+            "posted_at": posted_at,
+        })
+    return jobs
+
+
+# ─────────────────────────── Source: Ashby ──────────────────────────────────
+
+def fetch_ashby_jobs(slug: str) -> list[dict]:
+    """Fetch all jobs from one Ashby public job board."""
+    url = f"{ASHBY_BASE}/{slug}"
+    try:
+        resp = requests.get(url, timeout=20)
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        if status != 404:
+            print(f"  ! ashby/{slug}: {exc}", file=sys.stderr)
+        return []
+    data = resp.json()
+    jobs = []
+    for j in data.get("jobs", []):
+        jobs.append({
+            "source": "ashby",
+            "id": str(j.get("id", "")),
+            "title": j.get("title", ""),
+            "company": slug,
+            "location": j.get("location", ""),
+            "url": j.get("jobUrl") or j.get("applyUrl", ""),
+            "content_html": j.get("descriptionHtml", "") or "",
+            "posted_at": _parse_iso(j.get("publishedAt")),
+        })
+    return jobs
+
+
 # ─────────────────────────── Source: The Muse ───────────────────────────────
 
 def fetch_muse_jobs(
@@ -512,6 +585,38 @@ def load_applied_urls() -> set[str]:
         return set(json.loads(APPLIED_PATH.read_text()).keys())
     except (json.JSONDecodeError, OSError):
         return set()
+
+
+def load_seen_urls() -> dict[str, dict]:
+    """Return dict of url -> {first_seen, last_seen, title, company}."""
+    if not SEEN_PATH.exists():
+        return {}
+    try:
+        return json.loads(SEEN_PATH.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def update_seen_urls(seen: dict[str, dict], jobs: list[dict]) -> None:
+    """Mark jobs as seen, persist to seen.json. Updates last_seen for repeats."""
+    now = datetime.now(timezone.utc).isoformat()
+    for job in jobs:
+        url = job.get("url") or ""
+        if not url:
+            continue
+        if url in seen:
+            seen[url]["last_seen"] = now
+        else:
+            seen[url] = {
+                "title": job.get("title", ""),
+                "company": job.get("company", ""),
+                "first_seen": now,
+                "last_seen": now,
+            }
+    try:
+        SEEN_PATH.write_text(json.dumps(seen, indent=2, sort_keys=True))
+    except OSError as exc:
+        print(f"  ! couldn't update {SEEN_PATH.name}: {exc}", file=sys.stderr)
 
 
 def load_bootstrap_companies() -> list[str]:
@@ -620,31 +725,44 @@ def matches_keywords(job: dict, keywords: list[str]) -> bool:
     return any(kw.lower() in haystack for kw in keywords)
 
 
-def scrape_jobs(config: dict, client: anthropic.Anthropic, resume: str) -> list[dict]:
+def _parallel_fetch(label: str, slugs: list[str], fetch_fn) -> list[dict]:
+    """Run fetch_fn(slug) in parallel for all slugs. Returns flattened job list."""
+    if not slugs:
+        return []
+    print(f"Scraping {len(slugs)} {label} boards in parallel...", file=sys.stderr)
+    out: list[dict] = []
+    with ThreadPoolExecutor(max_workers=10) as ex:
+        for jobs in ex.map(fetch_fn, slugs):
+            out.extend(jobs)
+    print(f"  {label}: {len(out)} jobs", file=sys.stderr)
+    return out
+
+
+def scrape_jobs(config: dict, client: anthropic.Anthropic, resume: str,
+                include_seen: bool = False) -> list[dict]:
     keywords = config.get("keywords") or []
     max_jobs = int(config.get("max_jobs", 10))
     posted_within_hours = config.get("posted_within_hours")
     all_jobs: list[dict] = []
 
+    # --- Greenhouse: hand-picked + bootstrap-expanded.
     gh_companies = ((config.get("greenhouse") or {}).get("companies")) or []
     bootstrap = load_bootstrap_companies()
-    gh_companies_all = list(dict.fromkeys(list(gh_companies) + list(bootstrap)))
+    gh_all = list(dict.fromkeys(list(gh_companies) + list(bootstrap)))
+    if gh_all:
+        print(f"({len(gh_companies)} configured + {len(bootstrap)} bootstrapped Greenhouse)",
+              file=sys.stderr)
+    all_jobs.extend(_parallel_fetch("greenhouse", gh_all, fetch_greenhouse_jobs))
 
-    if gh_companies_all:
-        print(
-            f"Scraping {len(gh_companies_all)} Greenhouse boards "
-            f"({len(gh_companies)} configured + {len(bootstrap)} bootstrapped) "
-            f"in parallel...",
-            file=sys.stderr,
-        )
-        with ThreadPoolExecutor(max_workers=10) as ex:
-            for jobs in ex.map(fetch_greenhouse_jobs, gh_companies_all):
-                all_jobs.extend(jobs)
-        print(
-            f"  greenhouse: {sum(1 for j in all_jobs if j['source'] == 'greenhouse')} jobs",
-            file=sys.stderr,
-        )
+    # --- Lever.
+    lever_companies = ((config.get("lever") or {}).get("companies")) or []
+    all_jobs.extend(_parallel_fetch("lever", lever_companies, fetch_lever_jobs))
 
+    # --- Ashby.
+    ashby_companies = ((config.get("ashby") or {}).get("companies")) or []
+    all_jobs.extend(_parallel_fetch("ashby", ashby_companies, fetch_ashby_jobs))
+
+    # --- The Muse.
     muse_cfg = config.get("muse")
     if muse_cfg:
         print("Querying The Muse...", file=sys.stderr)
@@ -675,19 +793,35 @@ def scrape_jobs(config: dict, client: anthropic.Anthropic, resume: str) -> list[
         before = len(filtered)
         filtered = [j for j in filtered if (j.get("url") or "") not in applied_urls]
         print(
-            f"  skipping {before - len(filtered)} already-tracked jobs",
+            f"  skipping {before - len(filtered)} already-applied jobs",
             file=sys.stderr,
         )
 
-    seen_urls: set[str] = set()
+    # Skip jobs seen in any prior run (unless --include-seen).
+    seen_record = load_seen_urls()
+    if seen_record and not include_seen:
+        seen_url_set = set(seen_record.keys())
+        before = len(filtered)
+        filtered = [j for j in filtered if (j.get("url") or "") not in seen_url_set]
+        print(
+            f"  skipping {before - len(filtered)} jobs already seen in a prior run "
+            f"(use --include-seen to override)",
+            file=sys.stderr,
+        )
+
+    # Per-run dedup by URL (same job appearing in two sources).
+    in_run_seen: set[str] = set()
     deduped: list[dict] = []
     for j in filtered:
         url = j.get("url") or ""
-        if url and url in seen_urls:
+        if url and url in in_run_seen:
             continue
         if url:
-            seen_urls.add(url)
+            in_run_seen.add(url)
         deduped.append(j)
+
+    # Persist newly-seen jobs (after we've selected them for analysis).
+    update_seen_urls(seen_record, deduped)
 
     print(
         f"Pool: {fetched} fetched -> {len(filtered)} after filters -> "
@@ -806,6 +940,24 @@ def main() -> None:
         default=None,
         help="Override config.yaml's max_jobs (how many to deep-analyze).",
     )
+    ap.add_argument(
+        "--include-seen",
+        action="store_true",
+        help="Re-analyze jobs that were seen in prior runs "
+             "(by default, jobs in seen.json are skipped to avoid duplicate spend).",
+    )
+    ap.add_argument(
+        "--watch",
+        action="store_true",
+        help="Loop forever: run, sleep --interval, run again. Use Ctrl-C to stop. "
+             "Each run writes results.csv (overwriting). Pair with cron for scheduling instead "
+             "if you want logs and email-on-failure.",
+    )
+    ap.add_argument(
+        "--interval",
+        default="24h",
+        help="When using --watch, time between runs. Examples: 24h, 12h, 6h, 30m, 2h30m.",
+    )
     args = ap.parse_args()
 
     if not os.environ.get("ANTHROPIC_API_KEY"):
@@ -831,7 +983,7 @@ def main() -> None:
         )
 
     client = anthropic.Anthropic()
-    jobs = scrape_jobs(config, client, resume)
+    jobs = scrape_jobs(config, client, resume, include_seen=args.include_seen)
     print(f"\nSelected {len(jobs)} jobs for deep analysis.\n", file=sys.stderr)
 
     if not jobs:
@@ -986,5 +1138,61 @@ def main() -> None:
     )
 
 
+def _parse_interval(s: str) -> int:
+    """Parse '24h', '12h30m', '90m', '6h' etc. into seconds."""
+    s = s.strip().lower()
+    pattern = re.compile(r"(\d+)\s*([hms])")
+    matches = pattern.findall(s)
+    if not matches:
+        raise ValueError(f"Couldn't parse interval {s!r}. Use formats like '24h', '12h30m', '6h'.")
+    seconds = 0
+    for n, unit in matches:
+        n = int(n)
+        if unit == "h":
+            seconds += n * 3600
+        elif unit == "m":
+            seconds += n * 60
+        elif unit == "s":
+            seconds += n
+    if seconds < 60:
+        raise ValueError(f"Interval too short: {seconds}s. Minimum is 60s to avoid hammering APIs.")
+    return seconds
+
+
 if __name__ == "__main__":
-    main()
+    import argparse as _ap
+    import time as _time
+
+    # Re-parse args at the top level so --watch is visible here too.
+    _parser = _ap.ArgumentParser(add_help=False)
+    _parser.add_argument("--watch", action="store_true")
+    _parser.add_argument("--interval", default="24h")
+    _watch_args, _ = _parser.parse_known_args()
+
+    if not _watch_args.watch:
+        main()
+    else:
+        try:
+            interval_s = _parse_interval(_watch_args.interval)
+        except ValueError as exc:
+            sys.exit(f"Error: {exc}")
+        print(f"Watch mode: re-running every {_watch_args.interval} ({interval_s}s). Ctrl-C to stop.\n",
+              file=sys.stderr)
+        run_n = 0
+        while True:
+            run_n += 1
+            print(f"\n{'═' * 60}\nRun #{run_n} at {datetime.now(timezone.utc).isoformat()}\n{'═' * 60}\n",
+                  file=sys.stderr)
+            try:
+                main()
+            except SystemExit as exc:
+                if exc.code:
+                    print(f"  pipeline exited with: {exc}", file=sys.stderr)
+            except Exception as exc:
+                print(f"  pipeline raised: {type(exc).__name__}: {exc}", file=sys.stderr)
+            print(f"\nSleeping {_watch_args.interval} until next run...", file=sys.stderr)
+            try:
+                _time.sleep(interval_s)
+            except KeyboardInterrupt:
+                print("\nInterrupted — exiting watch mode.", file=sys.stderr)
+                break

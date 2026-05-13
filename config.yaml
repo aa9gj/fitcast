@@ -17,6 +17,23 @@ greenhouse:
     - komodohealth              # healthcare data analytics
     - doximity                  # medical professional network
 
+# ─── Lever: public job board API ─────────────────────────────────────────
+# Same shape as Greenhouse — slugs found at jobs.lever.co/<slug>.
+# Many AI/ML companies use Lever (Anthropic, Cohere, Mistral, etc.).
+# Comment out to disable.
+lever:
+  companies:
+    - mistral             # AI / LLM
+    - benchling01         # life sciences platform (alt slug)
+
+# ─── Ashby: public job board API ─────────────────────────────────────────
+# Same shape — slugs found at jobs.ashbyhq.com/<slug>.
+# Many newer YC-era startups (Linear, Ramp, Notion, etc.).
+# Comment out to disable.
+ashby:
+  companies:
+    - linear              # planning tool (sample — replace with biotech-AI as you find them)
+
 # ─── The Muse: public aggregator API (no auth, no slug list) ─────────────
 # The Muse handles company discovery for you — broader coverage with zero
 # list maintenance. Filter by category, level, and location instead.
