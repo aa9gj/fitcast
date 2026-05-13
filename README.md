@@ -90,7 +90,9 @@ For context: LinkedIn Premium Career is $40/month; most "AI resume tailoring" Sa
 | `rationale` | Claude's 2-3 sentence explanation |
 | `requirements_text` | Verbatim requirements section pulled from the posting |
 
-`results.json` has the same data plus full posting text (used by `tailor.py`).
+`results.json` has the same data plus:
+- Full posting text (used by `tailor.py` and `audit.py`)
+- A `requirements_evidence` array — one entry per requirement with `met`, `confidence`, and a specific quote/reference from your resume. Use [`audit.py`](#audit-a-jobs-score) to print this in human-readable form.
 
 ## Customize
 
@@ -165,6 +167,35 @@ pandoc tailored/foo.md -o foo.docx
 (Most ATS uploaders prefer DOCX or PDF over Markdown.)
 
 Cost: ~$0.05 per tailored resume on Sonnet 4.6.
+
+## Audit a job's score
+
+After running `pipeline.py`, you can re-analyze any specific job in verbose mode to see exactly how it was judged:
+
+```bash
+python audit.py <job-url-from-results.json>
+```
+
+Prints (a) Claude's full reasoning chain, (b) per-requirement breakdown showing which lines from your resume were used as evidence for each requirement, (c) ATS keyword analysis with matches/gaps, and (d) the verbatim requirements section from the posting.
+
+Use this when:
+- A score surprises you and you want to understand why
+- You suspect Claude misread your resume on a specific requirement
+- You're deciding whether to tailor for a `stretch` match — see exactly what's missing first
+
+Cost: ~$0.04 per audit (uses higher effort than the main run for more detailed reasoning).
+
+## Auto-extract keywords from your resume
+
+Tired of curating the `keywords:` filter manually? Let Claude propose them from your resume:
+
+```bash
+python extract_keywords.py
+```
+
+Outputs a YAML block of 10–20 high-signal keywords (technologies, domains, role types) ready to paste into `config.yaml`'s `keywords:` section. Edit, prune, or extend.
+
+Cost: ~$0.005 per run.
 
 ## Track which jobs you've applied to
 
