@@ -130,16 +130,16 @@ Every input is in `results.json` under `score_components` and `breakdown`:
 
 | Field | Example |
 |---|---|
-| `requirements_met` / `requirements_total` | 5 / 9 |
-| `met_ratio` | 0.56 |
-| `base_score` | 56 |
+| `requirements_met` / `requirements_total` | 6 / 9 |
+| `met_ratio` | 0.67 |
+| `base_score` | 67 |
 | `years_required` / `years_resume_estimated` | 5 / 3 |
 | `years_penalty` | -10 |
 | `degree_required` / `degree_resume` / `degree_match` | "PhD" / "PhD" / "meets_or_exceeds" |
 | `degree_penalty` | 0 |
-| Final `score` | 46 → `stretch` |
+| Final `score` | 57 → `stretch` |
 
-You can hand-check any score: "5/9 = 56 base, minus 10 for years, equals 46 → stretch." Run `python audit.py <url>` to print this breakdown for any job.
+You can hand-check any score: "6/9 = 67 base, minus 10 for years, equals 57 → stretch." Run `python audit.py <url>` to print this breakdown for any job.
 
 ### 3. ATS score (0–100, derived from keyword extraction)
 
