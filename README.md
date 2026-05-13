@@ -6,6 +6,8 @@
 
 A small CLI that scrapes public job boards, asks Claude to find the requirements section in each posting, and predicts whether your resume qualifies you for the role — with a transparent score derivation, ATS-keyword matching against the O*NET skill ontology, and an option to generate per-job tailored resumes.
 
+**Access note:** the quickstart and Colab badge work for anyone once this repository is public. While the repo is private, clone/Colab access requires GitHub access to `aa9gj/fitcast`; use the local quickstart from an authenticated checkout.
+
 ## Quick start
 
 Requires **Python 3.10+**.
@@ -18,6 +20,8 @@ cd fitcast
 python3.11 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+# Optional: add local embedding-based domain_fit_score
+# pip install -r requirements-full.txt
 
 cp resume.example.md resume.md
 $EDITOR resume.md       # paste your real resume in markdown
@@ -27,6 +31,8 @@ python pipeline.py
 ```
 
 Open `results.csv` in Google Sheets — sorted by score, URLs are clickable apply links.
+
+For a reproducible full development environment, use `pip install -r requirements.lock`. For editable installs, `pip install -e ".[dev]"` installs the test dependencies, and `pip install -e ".[dev,embeddings]"` also enables `domain_fit_score`.
 
 ## What you get
 
@@ -66,11 +72,13 @@ Pipeline flags: `--dry-run`, `--max-jobs N`, `--include-seen`, `--watch --interv
 ## Run the tests
 
 ```bash
-pip install pytest
+pip install -e ".[dev]"
 pytest tests/
 ```
 
-105 tests covering the score-derivation functions, the location/salary/time-window filters, and the skill extractor. All pure Python — no API calls.
+113 tests covering the score-derivation functions, source validation, state handling, location/salary/time-window filters, and the skill extractor. All pure Python — no API calls.
+
+CI runs the syntax check and tests on Python 3.10, 3.11, and 3.12 via GitHub Actions.
 
 ## License
 

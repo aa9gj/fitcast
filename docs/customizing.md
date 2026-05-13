@@ -166,9 +166,9 @@ Status is free-form. Conventional values: `interested`, `applied`, `phone_screen
 
 ## Skip jobs you've already seen (across runs)
 
-By default, jobs that appeared in any prior run are silently skipped on subsequent runs. This avoids paying to re-analyze the same jobs as you iterate.
+By default, jobs that were successfully analyzed in a prior run are skipped on subsequent runs. This avoids paying to re-analyze the same jobs as you iterate, while keeping jobs that were merely filtered, pre-ranked away, or failed analysis eligible for a future run.
 
-State lives in `seen.json` (gitignored). Each entry: `{title, company, first_seen, last_seen}`.
+State lives in `seen.json` (gitignored). Each entry: `{title, company, first_seen, last_seen}`. The file is updated only after at least one job analysis succeeds.
 
 To re-analyze everything anyway:
 
@@ -177,6 +177,33 @@ python pipeline.py --include-seen
 ```
 
 To start fresh: delete `seen.json`.
+
+## Install Options
+
+Default install keeps setup lighter and omits the optional embedding stack:
+
+```bash
+pip install -r requirements.txt
+```
+
+To include `domain_fit_score`, install the full requirements file:
+
+```bash
+pip install -r requirements-full.txt
+```
+
+For development:
+
+```bash
+pip install -e ".[dev]"             # tests, no embeddings
+pip install -e ".[dev,embeddings]"  # tests + domain_fit_score
+```
+
+For a pinned, known-good full development environment:
+
+```bash
+pip install -r requirements.lock
+```
 
 ## Watch mode
 

@@ -80,7 +80,11 @@ check_import requests
 check_import "PyYAML" yaml
 check_import "PyPDF2"
 check_import "python-docx" docx
-check_import "sentence-transformers" sentence_transformers
+if "$PY" -c "import sentence_transformers" 2>/dev/null; then
+    ok "sentence-transformers"
+else
+    warn "sentence-transformers not installed — optional; domain_fit_score will be omitted"
+fi
 
 # ─── 3. Project files ────────────────────────────────────────────────────
 
@@ -89,7 +93,8 @@ section "3. Project files"
 for f in pipeline.py audit.py tailor.py track.py extract_keywords.py \
          bootstrap_companies.py bootstrap_ontologies.py skill_extractor.py \
          check_resume_format.py compare_resumes.py \
-         config.yaml requirements.txt resume.example.md; do
+         config.yaml requirements.txt requirements-full.txt requirements.lock \
+         pyproject.toml .github/workflows/ci.yml resume.example.md; do
     if [[ -f "$f" ]]; then
         ok "$f present"
     else
@@ -168,11 +173,23 @@ probe() {
     fi
 }
 
+probe_optional() {
+    local label="$1" url="$2" expect="${3:-200}" note="${4:-optional endpoint unavailable}"
+    local code
+    code=$(curl -sL -o /dev/null -w "%{http_code}" --max-time 10 "$url" 2>/dev/null)
+    if [[ "$code" == "$expect" ]]; then
+        ok "$label (HTTP $code)"
+    else
+        warn "$label returned HTTP $code (expected $expect) — $note"
+    fi
+}
+
 probe "Greenhouse" "https://boards-api.greenhouse.io/v1/boards/recursionpharmaceuticals/jobs"
 probe "Lever"      "https://api.lever.co/v0/postings/mistral?mode=json"
 probe "Ashby"      "https://api.ashbyhq.com/posting-api/job-board/linear"
 probe "The Muse"   "https://www.themuse.com/api/public/jobs?page=0"
-probe "O*NET dl"   "https://www.onetcenter.org/dl_files/database/db_28_3_text.zip"
+probe_optional "O*NET dl" "https://www.onetcenter.org/dl_files/database/db_28_3_text.zip" 200 \
+    "only needed when refreshing data/skills.json"
 
 # ─── 8. Config validates ─────────────────────────────────────────────────
 

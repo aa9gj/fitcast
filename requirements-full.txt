@@ -1,0 +1,5 @@
+-r requirements.txt
+
+# Optional domain-fit embeddings. Pulls PyTorch + transformers, so this is
+# intentionally kept out of the default install path.
+sentence-transformers>=2.2.0

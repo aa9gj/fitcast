@@ -346,24 +346,22 @@ def derive_ats_score(
 
 # ───────────── Domain-fit via embedding similarity (optional dep) ───────────
 
-try:
-    from sentence_transformers import SentenceTransformer, util as st_util
-    _ST_AVAILABLE = True
-except ImportError:
-    _ST_AVAILABLE = False
-
 _st_model = None
+_st_util = None
 
 
 def get_embedding_model():
     """Lazy-load the sentence-transformers model. Returns None if not installed."""
-    global _st_model
-    if not _ST_AVAILABLE:
-        return None
+    global _st_model, _st_util
     if _st_model is None:
+        try:
+            from sentence_transformers import SentenceTransformer, util as st_util
+        except ImportError:
+            return None
         print(f"Loading embedding model {EMBEDDING_MODEL_NAME} (first run downloads ~80MB)...",
               file=sys.stderr)
         _st_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
+        _st_util = st_util
     return _st_model
 
 
@@ -374,7 +372,7 @@ def compute_domain_fit(resume_embedding, posting_text: str) -> int | None:
     if model is None or resume_embedding is None:
         return None
     posting_emb = model.encode(posting_text, convert_to_numpy=True)
-    sim = st_util.cos_sim(resume_embedding, posting_emb).item()
+    sim = _st_util.cos_sim(resume_embedding, posting_emb).item()
     # Cosine sim for text is usually 0-1; clamp just in case.
     return max(0, min(100, round(sim * 100)))
 
@@ -672,6 +670,20 @@ def load_bootstrap_companies() -> list[str]:
         return data.get("greenhouse_companies") or []
     except (yaml.YAMLError, OSError):
         return []
+
+
+def enabled_sources(config: dict) -> list[str]:
+    """Return enabled source names from config and generated bootstrap data."""
+    sources: list[str] = []
+    if ((config.get("greenhouse") or {}).get("companies")) or BOOTSTRAP_PATH.exists():
+        sources.append("greenhouse")
+    if ((config.get("lever") or {}).get("companies")):
+        sources.append("lever")
+    if ((config.get("ashby") or {}).get("companies")):
+        sources.append("ashby")
+    if config.get("muse"):
+        sources.append("muse")
+    return sources
 
 
 # ─────────────────────────── Pre-rank with Haiku ────────────────────────────
@@ -1008,9 +1020,6 @@ def scrape_jobs(config: dict, client: anthropic.Anthropic, resume: str,
             in_run_seen.add(url)
         deduped.append(j)
 
-    # Persist newly-seen jobs (after we've selected them for analysis).
-    update_seen_urls(seen_record, deduped)
-
     print(
         f"Pool: {fetched} fetched -> {len(filtered)} after filters -> "
         f"{len(deduped)} after dedup",
@@ -1162,12 +1171,11 @@ def main() -> None:
     if not resume:
         sys.exit(f"Error: {RESUME_PATH} is empty.")
 
-    has_greenhouse = bool((config.get("greenhouse") or {}).get("companies")) or BOOTSTRAP_PATH.exists()
-    has_muse = bool(config.get("muse"))
-    if not (has_greenhouse or has_muse):
+    if not enabled_sources(config):
         sys.exit(
             "Error: config.yaml has no sources enabled "
-            "(need either greenhouse.companies or a muse: block)."
+            "(enable at least one of: greenhouse.companies, lever.companies, "
+            "ashby.companies, or a muse: block)."
         )
 
     client = anthropic.Anthropic()
@@ -1194,10 +1202,9 @@ def main() -> None:
 
     # Pre-compute resume embedding once if sentence-transformers is available.
     resume_embedding = None
-    if _ST_AVAILABLE:
-        model = get_embedding_model()
-        if model is not None:
-            resume_embedding = model.encode(resume, convert_to_numpy=True)
+    model = get_embedding_model()
+    if model is not None:
+        resume_embedding = model.encode(resume, convert_to_numpy=True)
     else:
         print("(sentence-transformers not installed — domain_fit_score will be omitted; "
               "install with `pip install sentence-transformers` to enable)",
@@ -1285,7 +1292,16 @@ def main() -> None:
             file=sys.stderr,
         )
 
+    if not results:
+        sys.exit(
+            "No jobs could be analyzed successfully. Check the Claude API errors above, "
+            "verify that selected postings have enough text, or rerun with --dry-run to "
+            "inspect the selected jobs without spending on analysis."
+        )
+
     results.sort(key=lambda r: r["score"], reverse=True)
+
+    update_seen_urls(load_seen_urls(), results)
 
     RESULTS_JSON.write_text(json.dumps(results, indent=2))
 

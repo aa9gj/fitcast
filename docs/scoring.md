@@ -97,7 +97,7 @@ This measures *vocabulary overlap*, which is what most older enterprise ATSes do
 
 Cosine similarity between [sentence-transformer](https://www.sbert.net/) embeddings of your resume and the job posting, scaled to 0–100. Captures *topical* similarity even when specific keywords differ ("data pipelines" ≈ "ETL workflows" ≈ "data flow infrastructure").
 
-Requires `sentence-transformers` installed (~500MB; included in `requirements.txt` by default — comment out the line to skip the install). When the dep is missing, `domain_fit_score` is simply omitted from results.
+Requires `sentence-transformers` installed. It is optional because it pulls a large PyTorch/transformers stack; install it with `pip install -r requirements-full.txt` or `pip install -e ".[embeddings]"`. When the dependency is missing, `domain_fit_score` is simply omitted from results.
 
 ## Why four different angles?
 

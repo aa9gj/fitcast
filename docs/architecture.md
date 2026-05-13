@@ -7,7 +7,7 @@
 │ pipeline.py │ ── 1. Scrape ──▶  Greenhouse + Lever + Ashby + Muse
 └─────────────┘                    (parallel HTTP, public APIs)
        │
-       │ 2. Filter ──▶ keywords / posted_within_hours / applied.json / seen.json
+       │ 2. Filter ──▶ keywords / posted_within_hours / location / salary / applied.json / seen.json
        │
        │ 3. Pre-rank ──▶ Haiku 4.5 scores 0–10 per candidate (cheap)
        │
@@ -22,7 +22,7 @@
        │      • ATS: hybrid of O*NET ontology + Claude's keywords
        │      • domain fit: sentence-transformers cosine similarity
        │
-       │ 6. Write ──▶ results.csv (sorted by score) + results.json (full data)
+       │ 6. Write + mark seen ──▶ results.csv (sorted by score) + results.json (full data)
        ▼
    results.csv
    results.json  ──▶  python audit.py <url>     (verbose breakdown for one job)
@@ -39,8 +39,8 @@
 | **Deep extract** (Sonnet 4.6 + adaptive thinking + structured output) | Find requirements, judge each one with evidence, identify quantitative inputs (years/degree), extract ATS keywords | ~$0.025–$0.045 per job |
 | **Score derivation** (pure Python) | Apply the transparent formulas to Claude's extraction | Free (local) |
 | **Skill extractor** (`skill_extractor.py`) | n-gram match against O*NET ontology | Free (local) |
-| **Embedding model** (sentence-transformers) | Cosine similarity for domain fit | Free (local, ~500MB install) |
-| **Tailor** (Sonnet 4.6) | Rewrite resume per-job, staying truthful | ~$0.05 per resume |
+| **Embedding model** (optional sentence-transformers extra) | Cosine similarity for domain fit | Free (local, large install) |
+| **Tailor** (Sonnet 4.6) | Generate truthful tailored LaTeX resume + optional web-searched cover letter | ~$0.05 resume only; ~$0.15 with cover letter |
 
 ## Choice of model
 
@@ -50,7 +50,7 @@ To switch, change `MODEL` at the top of `pipeline.py` and `tailor.py` to `claude
 
 The pre-rank pass uses **`claude-haiku-4-5`** (cheapest, fastest model). The pre-rank prompt is intentionally simple — just a 0–10 relevance score — so Haiku is appropriate.
 
-The embedding model is **`sentence-transformers/all-MiniLM-L6-v2`** — small (~80MB), fast on CPU (~10ms per encode), good enough for resume↔posting topical similarity.
+The optional embedding model is **`sentence-transformers/all-MiniLM-L6-v2`**. Install it with `pip install -r requirements-full.txt` or `pip install -e ".[embeddings]"`. Without it, `domain_fit_score` is left blank and the rest of the pipeline still runs.
 
 ## Design decisions worth knowing
 
@@ -98,6 +98,9 @@ Auto-apply violates essentially every ATS's terms of service and reads as spam t
 | `skill_extractor.py` | Reusable: load skills.json + n-gram match |
 | `data/skills.json` | Pre-built O*NET + supplement skill catalog (committed) |
 | `data/skills_supplement.txt` | Hand-curated modern tech terms (editable) |
-| `tests/` | pytest suite for pure functions (105 tests) |
+| `tests/` | pytest suite for pure functions, filters, state handling, and release edge cases |
 | `smoke_test.sh` | Bash script: verify every component end-to-end (`./smoke_test.sh [--paid]`) |
 | `fitcast.ipynb` | Colab harness — clones the repo and shells out to `python pipeline.py`/`tailor.py` |
+| `.github/workflows/ci.yml` | GitHub Actions CI for syntax checks + tests on Python 3.10–3.12 |
+| `pyproject.toml` | Project metadata and optional dependency groups |
+| `requirements.lock` | Pinned full development environment |

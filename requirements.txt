@@ -9,7 +9,6 @@ pyyaml>=6.0
 PyPDF2>=3.0
 python-docx>=1.0
 
-# Optional: enables the domain_fit_score (resume × posting embedding cosine
-# similarity). Adds ~500MB of deps (PyTorch + transformers). Comment out to
-# skip — pipeline runs fine without it; domain_fit_score will just be empty.
-sentence-transformers>=2.2.0
+# Optional: install `requirements-full.txt` or `pip install -e .[embeddings]`
+# to enable domain_fit_score via sentence-transformers. The pipeline runs
+# without it; domain_fit_score will be blank.

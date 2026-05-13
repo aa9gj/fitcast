@@ -1,6 +1,6 @@
 # Data sources
 
-The pipeline supports four sources, all enabled together by default. Results are merged and deduplicated by URL.
+The pipeline supports four sources, all enabled together by default. Enable any combination you want; a config with only Lever, only Ashby, only Greenhouse, or only The Muse is valid. Results are merged and deduplicated by URL.
 
 | Source | API base | What it is | How to find slugs |
 |---|---|---|---|
@@ -44,7 +44,7 @@ muse:
   max_pages: 2
 ```
 
-Comment out any block to disable that source.
+Comment out any block to disable that source. At least one of `greenhouse.companies`, `lever.companies`, `ashby.companies`, or `muse` must be enabled.
 
 ## Discovering slugs
 

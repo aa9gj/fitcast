@@ -1,5 +1,5 @@
-# Sources to scrape from. Both can be enabled at once; results are merged
-# and deduplicated by URL.
+# Sources to scrape from. Enable any combination; results are merged and
+# deduplicated by URL.
 
 # ─── Greenhouse: hand-picked company boards ───────────────────────────────
 # Highest-quality data — verbatim full job descriptions straight from each
