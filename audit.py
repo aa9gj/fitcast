@@ -2,8 +2,8 @@
 """audit.py — re-run analysis on one job in verbose mode.
 
 Surfaces Claude's full reasoning chain alongside the per-requirement evidence
-so you can understand exactly why a particular score or verdict came out the
-way it did, or spot-check where Claude may have misread your resume.
+AND the score derivation breakdown — so you can see exactly which numbers
+went into the qualification + ATS scores.
 
 Reads from results.json (produced by pipeline.py).
 
@@ -21,12 +21,16 @@ from pathlib import Path
 
 import anthropic
 
-# Re-use the pipeline's schema, system prompt, and helpers — single source of truth.
+# Re-use the pipeline's schema, system prompt, derivation, and helpers.
 from pipeline import (
     ANALYSIS_SCHEMA,
     JobAnalysis,
     MODEL,
     SYSTEM_INSTRUCTIONS,
+    compute_domain_fit,
+    derive_ats_score,
+    derive_qualification_score,
+    get_embedding_model,
 )
 
 ROOT = Path(__file__).parent
@@ -39,9 +43,7 @@ def _bar(label: str = "", width: int = 78) -> str:
         return "─" * width
     label = f" {label} "
     pad = max(0, width - len(label) - 4)
-    left = "──"
-    right = "─" * pad
-    return f"\n{left}{label}{right}\n"
+    return f"\n──{label}{'─' * pad}\n"
 
 
 def main() -> None:
@@ -57,7 +59,7 @@ def main() -> None:
     if not RESUME_PATH.exists():
         sys.exit(f"Error: {RESUME_PATH} not found.")
     if not RESULTS_JSON.exists():
-        sys.exit(f"Error: {RESULTS_JSON} not found. Run `python pipeline.py` first.")
+        sys.exit(f"Error: {RESUME_PATH} not found. Run `python pipeline.py` first.")
 
     resume = RESUME_PATH.read_text()
     try:
@@ -73,12 +75,14 @@ def main() -> None:
     if not posting_text:
         sys.exit(
             "Error: no posting_text saved for this job. Re-run pipeline.py to capture it "
-            "(older runs from before the schema update don't have full posting text saved)."
+            "(older runs from before the schema update don't have full posting text)."
         )
 
     print(_bar(f"Auditing: {target['title']} @ {target['company']}"))
     print(f"Previous run:  {target.get('verdict', '?')}  ({target.get('score', '?')}/100)  "
-          f"ATS {target.get('ats_score', '?')}/100")
+          f"ATS {target.get('ats_score', '?')}/100"
+          + (f"  domain_fit {target.get('domain_fit_score', '?')}/100"
+             if target.get('domain_fit_score') is not None else ""))
     print(f"URL:           {target.get('url', '')}")
 
     client = anthropic.Anthropic()
@@ -106,8 +110,7 @@ def main() -> None:
         messages=[{"role": "user", "content": user_msg}],
     )
 
-    # Surface thinking blocks if visible. (On Sonnet 4.6 the text is visible
-    # by default; on Opus 4.7 it's omitted unless display="summarized" is set.)
+    # Surface thinking blocks if visible.
     for block in response.content:
         if block.type == "thinking":
             text = getattr(block, "thinking", "") or ""
@@ -121,11 +124,48 @@ def main() -> None:
 
     analysis = JobAnalysis.model_validate_json(out)
     qm = analysis.qualification_match
+    ats = analysis.ats_assessment
 
-    print(_bar("Verdict"))
-    print(f"  Qualification: {qm.verdict}  ({qm.score}/100)")
-    print(f"  ATS keyword:   {analysis.ats_assessment.ats_score}/100")
+    # Derive the same scores the pipeline does.
+    score, verdict, score_components = derive_qualification_score(qm)
+    ats_score, ats_components = derive_ats_score(ats)
+
+    # Domain fit if available.
+    domain_fit = None
+    model = get_embedding_model()
+    if model is not None:
+        resume_embedding = model.encode(resume, convert_to_numpy=True)
+        domain_fit = compute_domain_fit(resume_embedding, posting_text)
+
+    print(_bar("Verdict (re-derived)"))
+    print(f"  Qualification: {verdict}  ({score}/100)")
+    print(f"  ATS keyword:   {ats_score}/100")
+    if domain_fit is not None:
+        print(f"  Domain fit:    {domain_fit}/100  (resume × posting embedding similarity)")
     print(f"\n  Rationale: {qm.rationale}")
+
+    print(_bar("Qualification score derivation (the math)"))
+    sc = score_components
+    print(f"  Requirements met:        {sc['requirements_met']} of {sc['requirements_total']}  "
+          f"(ratio {sc.get('met_ratio', '?')})")
+    print(f"  Base score (ratio×100):  {sc['base_score']}")
+    print(f"  Degree penalty:          {sc['degree_penalty']:+d}  "
+          f"(required: {qm.breakdown.degree_required or 'unspecified'}, "
+          f"resume: {qm.breakdown.degree_resume or 'unspecified'}, "
+          f"match: {qm.breakdown.degree_match})")
+    print(f"  Years penalty:           {sc['years_penalty']:+d}  "
+          f"(required: {qm.breakdown.years_required or 'unspecified'}, "
+          f"resume estimate: {qm.breakdown.years_resume_estimated or 'unspecified'})")
+    print(f"  Adjustments total:       {sc['adjustments_total']:+d}")
+    print(f"  Final score:             {score} → {verdict}")
+
+    print(_bar("ATS score derivation"))
+    ac = ats_components
+    print(f"  Keywords matched:        {ac['keywords_matched']} of {ac['keywords_total']}  "
+          f"(ratio {ac.get('match_ratio', '?')})")
+    if ac.get("format_warnings_penalty"):
+        print(f"  Format-warning penalty:  {ac['format_warnings_penalty']:+d}")
+    print(f"  Final ATS score:         {ats_score}")
 
     print(_bar("Per-requirement evidence"))
     if not qm.requirements:
@@ -137,17 +177,17 @@ def main() -> None:
         print(f"        evidence: {r.evidence}\n")
 
     print(_bar("ATS keyword analysis"))
-    if analysis.ats_assessment.keyword_matches:
+    if ats.keyword_matches:
         print("  Matches (in resume):")
-        for kw in analysis.ats_assessment.keyword_matches:
+        for kw in ats.keyword_matches:
             print(f"    ✓ {kw}")
-    if analysis.ats_assessment.keyword_gaps:
+    if ats.keyword_gaps:
         print("\n  Gaps (NOT in resume — consider adding when you genuinely have the experience):")
-        for kw in analysis.ats_assessment.keyword_gaps:
+        for kw in ats.keyword_gaps:
             print(f"    ✗ {kw}")
-    if analysis.ats_assessment.format_warnings:
+    if ats.format_warnings:
         print("\n  Format warnings:")
-        for w in analysis.ats_assessment.format_warnings:
+        for w in ats.format_warnings:
             print(f"    ! {w}")
 
     print(_bar("Requirements section (verbatim from posting)"))

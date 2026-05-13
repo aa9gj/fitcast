@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Job hunting pipeline: scrape Greenhouse boards and The Muse, locate the
-requirements section in each posting, predict whether the candidate qualifies,
-and write ranked results to CSV + JSON.
+"""Job hunting pipeline: scrape Greenhouse + The Muse, locate the requirements
+section in each posting, derive principled qualification + ATS + domain-fit
+scores, and write ranked results to CSV + JSON.
 
 Usage:
     pip install -r requirements.txt
@@ -38,25 +38,24 @@ RESULTS_JSON = ROOT / "results.json"
 APPLIED_PATH = ROOT / "applied.json"
 BOOTSTRAP_PATH = ROOT / "companies.bootstrap.yaml"
 
-# Sonnet 4.6 is the default for deep analysis — structured extraction +
-# ranked match against a resume is well within its capabilities, at ~40%
-# the cost of Opus 4.7. For more nuance change to "claude-opus-4-7".
+# Sonnet 4.6 is the default for deep analysis. Sonnet does requirements +
+# evidence extraction; the qualification + ATS scores are then DERIVED
+# in Python from that extraction, not produced by Claude as a vibe number.
 MODEL = "claude-sonnet-4-6"
 
-# Haiku 4.5 is used for the optional cheap pre-rank pass. ~$0.0007 per call.
+# Haiku 4.5 for the cheap pre-rank pass.
 PRERANK_MODEL = "claude-haiku-4-5"
+
+# Embedding model for domain-fit similarity. Optional — the pipeline runs
+# fine without sentence-transformers installed (domain_fit_score will be
+# None in that case). Install with `pip install sentence-transformers`.
+EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 
 GREENHOUSE_BASE = "https://boards-api.greenhouse.io/v1/boards"
 MUSE_BASE = "https://www.themuse.com/api/public/jobs"
 
 
-# ───────────────────────────── Output schema ────────────────────────────────
-
-class RequirementsSection(BaseModel):
-    found: bool
-    section_heading: str | None = None
-    text: str = ""
-
+# ─────────────── Output schema (extracted from Claude) ──────────────────────
 
 class RequirementEvidence(BaseModel):
     requirement: str
@@ -65,15 +64,42 @@ class RequirementEvidence(BaseModel):
     evidence: str
 
 
+class RequirementBreakdown(BaseModel):
+    """Quantitative inputs used to derive the qualification score."""
+    years_required: int | None = Field(
+        description="Years of experience required by the posting, or null if not specified."
+    )
+    years_resume_estimated: int | None = Field(
+        description="Years of relevant industry experience estimated from the resume."
+    )
+    degree_required: str | None = Field(
+        description="Highest degree required by the posting (e.g., 'PhD', 'MS', 'BS'), or null if not specified."
+    )
+    degree_resume: str | None = Field(
+        description="Highest relevant degree on the resume."
+    )
+    degree_match: Literal["meets_or_exceeds", "below", "unspecified"] = Field(
+        description="meets_or_exceeds: resume degree >= required (or no degree required). below: resume below required. unspecified: posting did not specify but resume has a degree."
+    )
+
+
+class RequirementsSection(BaseModel):
+    found: bool
+    section_heading: str | None = None
+    text: str = ""
+
+
 class QualificationMatch(BaseModel):
-    score: int = Field(ge=0, le=100)
-    verdict: Literal["qualified", "stretch", "not_qualified"]
+    """Pure extraction — no score or verdict here. Both are derived in Python
+    from `requirements` + `breakdown` so the math is auditable."""
     requirements: list[RequirementEvidence]
+    breakdown: RequirementBreakdown
     rationale: str
 
 
 class ATSAssessment(BaseModel):
-    ats_score: int = Field(ge=0, le=100)
+    """Same idea — keyword extraction only. ats_score is derived in Python
+    as |matches| / (|matches| + |gaps|) * 100."""
     keyword_matches: list[str]
     keyword_gaps: list[str]
     format_warnings: list[str]
@@ -101,68 +127,189 @@ ANALYSIS_SCHEMA: dict = {
         "qualification_match": {
             "type": "object",
             "properties": {
-                "score": {"type": "integer", "description": "0-100. 90+ qualified, 60-89 stretch, <60 not qualified."},
-                "verdict": {"type": "string", "enum": ["qualified", "stretch", "not_qualified"]},
                 "requirements": {
                     "type": "array",
                     "description": "One entry per requirement found in the posting's requirements section.",
                     "items": {
                         "type": "object",
                         "properties": {
-                            "requirement": {
-                                "type": "string",
-                                "description": "Short paraphrase of the requirement as stated in the posting.",
-                            },
-                            "met": {
-                                "type": "boolean",
-                                "description": "Whether the candidate's resume clearly demonstrates this requirement.",
-                            },
+                            "requirement": {"type": "string"},
+                            "met": {"type": "boolean"},
                             "confidence": {
                                 "type": "string",
                                 "enum": ["high", "medium", "low"],
-                                "description": "high = clear evidence in resume, medium = inferred, low = ambiguous.",
                             },
-                            "evidence": {
-                                "type": "string",
-                                "description": "Specific quote/reference from the resume supporting the assessment, or 'not mentioned in resume' / 'resume shows X yrs vs N+ required' for unmet ones.",
-                            },
+                            "evidence": {"type": "string"},
                         },
                         "required": ["requirement", "met", "confidence", "evidence"],
                         "additionalProperties": False,
                     },
                 },
-                "rationale": {"type": "string", "description": "2-3 sentence honest explanation."},
+                "breakdown": {
+                    "type": "object",
+                    "properties": {
+                        "years_required": {"type": ["integer", "null"]},
+                        "years_resume_estimated": {"type": ["integer", "null"]},
+                        "degree_required": {"type": ["string", "null"]},
+                        "degree_resume": {"type": ["string", "null"]},
+                        "degree_match": {
+                            "type": "string",
+                            "enum": ["meets_or_exceeds", "below", "unspecified"],
+                        },
+                    },
+                    "required": [
+                        "years_required",
+                        "years_resume_estimated",
+                        "degree_required",
+                        "degree_resume",
+                        "degree_match",
+                    ],
+                    "additionalProperties": False,
+                },
+                "rationale": {"type": "string"},
             },
-            "required": ["score", "verdict", "requirements", "rationale"],
+            "required": ["requirements", "breakdown", "rationale"],
             "additionalProperties": False,
         },
         "ats_assessment": {
             "type": "object",
             "properties": {
-                "ats_score": {"type": "integer", "description": "0-100 keyword/format alignment score."},
-                "keyword_matches": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Important keywords from the posting that appear in the resume.",
-                },
-                "keyword_gaps": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Important keywords from the posting that are missing from the resume.",
-                },
-                "format_warnings": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Resume format issues that could trip up an ATS parser. Empty if none.",
-                },
+                "keyword_matches": {"type": "array", "items": {"type": "string"}},
+                "keyword_gaps": {"type": "array", "items": {"type": "string"}},
+                "format_warnings": {"type": "array", "items": {"type": "string"}},
             },
-            "required": ["ats_score", "keyword_matches", "keyword_gaps", "format_warnings"],
+            "required": ["keyword_matches", "keyword_gaps", "format_warnings"],
             "additionalProperties": False,
         },
     },
     "required": ["requirements_section", "qualification_match", "ats_assessment"],
     "additionalProperties": False,
 }
+
+
+# ─────────────────────── Score derivation (deterministic) ───────────────────
+
+def derive_qualification_score(qm: QualificationMatch) -> tuple[int, str, dict]:
+    """Compute qualification score + verdict from the extracted evidence.
+
+    Formula:
+        base = (requirements_met / requirements_total) * 100
+        adjustments:
+          - degree below required:                   -30
+          - years short by N (capped at 6):          -5 per year (max -30)
+        score = clamp(base + adjustments, 0, 100)
+        verdict: 90+ qualified, 60-89 stretch, <60 not_qualified
+
+    Returns (score, verdict, components_dict).
+    """
+    reqs = qm.requirements
+    total = len(reqs)
+    met = sum(1 for r in reqs if r.met)
+
+    if total == 0:
+        # No requirements identified — fall back to neutral.
+        return 50, "stretch", {
+            "requirements_met": 0,
+            "requirements_total": 0,
+            "met_ratio": None,
+            "base_score": 50,
+            "degree_penalty": 0,
+            "years_penalty": 0,
+            "adjustments_total": 0,
+        }
+
+    met_ratio = met / total
+    base = met_ratio * 100
+
+    degree_penalty = -30 if qm.breakdown.degree_match == "below" else 0
+
+    years_penalty = 0
+    if (qm.breakdown.years_required is not None
+            and qm.breakdown.years_resume_estimated is not None):
+        gap = qm.breakdown.years_required - qm.breakdown.years_resume_estimated
+        if gap > 0:
+            years_penalty = -min(30, gap * 5)
+
+    adjustments = degree_penalty + years_penalty
+    score = max(0, min(100, round(base + adjustments)))
+    verdict = "qualified" if score >= 90 else "stretch" if score >= 60 else "not_qualified"
+
+    return score, verdict, {
+        "requirements_met": met,
+        "requirements_total": total,
+        "met_ratio": round(met_ratio, 2),
+        "base_score": round(base),
+        "degree_penalty": degree_penalty,
+        "years_penalty": years_penalty,
+        "adjustments_total": adjustments,
+    }
+
+
+def derive_ats_score(ats: ATSAssessment) -> tuple[int, dict]:
+    """ATS score is the keyword-overlap percentage from the extraction,
+    minus -5 per format warning. Deterministic.
+
+    Returns (score, components_dict).
+    """
+    matches = len(ats.keyword_matches)
+    gaps = len(ats.keyword_gaps)
+    total = matches + gaps
+    warnings = len(ats.format_warnings)
+
+    if total == 0:
+        return 50, {
+            "keywords_matched": 0,
+            "keywords_total": 0,
+            "match_ratio": None,
+            "format_warnings_penalty": -5 * warnings,
+        }
+
+    match_ratio = matches / total
+    raw = match_ratio * 100
+    warning_penalty = -5 * warnings
+    score = max(0, min(100, round(raw + warning_penalty)))
+
+    return score, {
+        "keywords_matched": matches,
+        "keywords_total": total,
+        "match_ratio": round(match_ratio, 2),
+        "format_warnings_penalty": warning_penalty,
+    }
+
+
+# ───────────── Domain-fit via embedding similarity (optional dep) ───────────
+
+try:
+    from sentence_transformers import SentenceTransformer, util as st_util
+    _ST_AVAILABLE = True
+except ImportError:
+    _ST_AVAILABLE = False
+
+_st_model = None
+
+
+def get_embedding_model():
+    """Lazy-load the sentence-transformers model. Returns None if not installed."""
+    global _st_model
+    if not _ST_AVAILABLE:
+        return None
+    if _st_model is None:
+        print(f"Loading embedding model {EMBEDDING_MODEL_NAME} (first run downloads ~80MB)...",
+              file=sys.stderr)
+        _st_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
+    return _st_model
+
+
+def compute_domain_fit(resume_embedding, posting_text: str) -> int | None:
+    """Cosine similarity between resume and posting embeddings, scaled 0-100.
+    Returns None if sentence-transformers isn't installed."""
+    model = get_embedding_model()
+    if model is None or resume_embedding is None:
+        return None
+    posting_emb = model.encode(posting_text, convert_to_numpy=True)
+    sim = st_util.cos_sim(resume_embedding, posting_emb).item()
+    # Cosine sim for text is usually 0-1; clamp just in case.
+    return max(0, min(100, round(sim * 100)))
 
 
 # ─────────────────────────── HTML → text ────────────────────────────────────
@@ -357,7 +504,7 @@ def prerank_score_one(client: anthropic.Anthropic, resume_summary: str, job: dic
             messages=[{"role": "user", "content": prompt}],
         )
     except anthropic.APIError:
-        return 5  # default to medium on transient errors
+        return 5
     text = next((b.text for b in resp.content if b.type == "text"), "").strip()
     m = re.search(r"\d+", text)
     if not m:
@@ -415,7 +562,6 @@ def scrape_jobs(config: dict, client: anthropic.Anthropic, resume: str) -> list[
     posted_within_hours = config.get("posted_within_hours")
     all_jobs: list[dict] = []
 
-    # --- Greenhouse: hand-picked + bootstrap-expanded, fetched in parallel.
     gh_companies = ((config.get("greenhouse") or {}).get("companies")) or []
     bootstrap = load_bootstrap_companies()
     gh_companies_all = list(dict.fromkeys(list(gh_companies) + list(bootstrap)))
@@ -435,7 +581,6 @@ def scrape_jobs(config: dict, client: anthropic.Anthropic, resume: str) -> list[
             file=sys.stderr,
         )
 
-    # --- The Muse.
     muse_cfg = config.get("muse")
     if muse_cfg:
         print("Querying The Muse...", file=sys.stderr)
@@ -450,10 +595,8 @@ def scrape_jobs(config: dict, client: anthropic.Anthropic, resume: str) -> list[
 
     fetched = len(all_jobs)
 
-    # --- Keyword filter.
     filtered = [j for j in all_jobs if matches_keywords(j, keywords)]
 
-    # --- Date filter (drop jobs with no timestamp; better safe than wrong).
     if posted_within_hours is not None:
         cutoff = datetime.now(timezone.utc) - timedelta(hours=int(posted_within_hours))
         before = len(filtered)
@@ -463,7 +606,6 @@ def scrape_jobs(config: dict, client: anthropic.Anthropic, resume: str) -> list[
             file=sys.stderr,
         )
 
-    # --- Skip already-applied jobs.
     applied_urls = load_applied_urls()
     if applied_urls:
         before = len(filtered)
@@ -473,7 +615,6 @@ def scrape_jobs(config: dict, client: anthropic.Anthropic, resume: str) -> list[
             file=sys.stderr,
         )
 
-    # --- Dedupe by URL.
     seen_urls: set[str] = set()
     deduped: list[dict] = []
     for j in filtered:
@@ -490,7 +631,6 @@ def scrape_jobs(config: dict, client: anthropic.Anthropic, resume: str) -> list[
         file=sys.stderr,
     )
 
-    # --- Optional cheap Haiku pre-rank pass before expensive deep analysis.
     prerank_cfg = config.get("prerank") or {}
     if prerank_cfg.get("enabled", False) and len(deduped) > max_jobs:
         deduped = prerank_jobs(
@@ -500,10 +640,8 @@ def scrape_jobs(config: dict, client: anthropic.Anthropic, resume: str) -> list[
             threshold=int(prerank_cfg.get("threshold", 5)),
             max_candidates=int(prerank_cfg.get("max_candidates", 100)),
         )
-        # When pre-rank is on, the top max_jobs by prerank_score are deep-analyzed.
         return deduped[:max_jobs]
 
-    # No pre-rank: deterministic shuffle so each run picks a varied sample.
     random.seed(42)
     random.shuffle(deduped)
     return deduped[:max_jobs]
@@ -511,34 +649,35 @@ def scrape_jobs(config: dict, client: anthropic.Anthropic, resume: str) -> list[
 
 # ──────────────────────────── Claude analysis ───────────────────────────────
 
-SYSTEM_INSTRUCTIONS = """You are a careful job-application analyst. For each job posting:
+SYSTEM_INSTRUCTIONS = """You are a careful job-application analyst. For each job posting, EXTRACT the following — your job is extraction and judgment per requirement, not picking aggregate scores. The pipeline computes scores from your extraction.
 
-1. Find the section that lists minimum requirements / qualifications / what the candidate must have. Common headings include "Requirements", "Minimum Qualifications", "Basic Qualifications", "What You Bring", "Qualifications", "Required Experience", "Required Skills". Quote the section verbatim in `requirements_section.text`. If no clear section exists, set `found: false` and leave `text` empty.
+1. Find the section that lists minimum requirements / qualifications. Common headings: "Requirements", "Minimum Qualifications", "Basic Qualifications", "What You Bring", "Qualifications", "Required Experience". Quote it verbatim in `requirements_section.text`. If no clear section exists, set `found: false`.
 
-2. Decide the verdict honestly — do not inflate:
-   - "qualified": clearly meets all hard requirements (degree level, years of experience, must-have skills)
-   - "stretch": meets most but is missing 1-2 specific items, or is close on years of experience
-   - "not_qualified": missing degree level, fundamental skill, or substantially less experience than required
-
-3. For EACH requirement you identified in step 1, output an entry in `requirements` containing:
-   - `requirement`: a short paraphrase of the requirement (e.g., "5+ years Python in production", "PhD in CS or related field")
+2. For EACH requirement you identified, output an entry in `qualification_match.requirements`:
+   - `requirement`: a short paraphrase (e.g., "5+ years Python in production")
    - `met`: true if the resume clearly demonstrates it, false otherwise
-   - `confidence`: "high" if the resume explicitly supports your judgment, "medium" if you're inferring (e.g., adjacent experience), "low" if it's genuinely ambiguous
-   - `evidence`: a specific quote or reference from the resume (e.g., "Resume bullet: 'Developed reproducible Python pipelines' at Colgate Jun 2023-Present, ~3 yrs"). For unmet requirements, write something concrete like "not mentioned in resume" or "resume shows 3 yrs of X vs 5+ required". This is the most important field — the user audits decisions through it.
+   - `confidence`: "high" if the resume explicitly supports your judgment, "medium" if you're inferring (adjacent experience), "low" if it's genuinely ambiguous
+   - `evidence`: a specific quote/reference from the resume (e.g., "Resume: 'Developed reproducible Python pipelines' at Colgate Jun 2023-Present, ~3 yrs"). For unmet requirements, write something concrete like "not mentioned in resume" or "resume shows 3 yrs vs 5+ required". This is the most important field — the user audits decisions through it.
 
-4. Score the qualification match 0-100 consistent with the verdict: 90+ qualified, 60-89 stretch, <60 not qualified.
+3. Fill `qualification_match.breakdown` honestly with the QUANTITATIVE inputs:
+   - `years_required`: integer years of experience the posting requires (e.g. 5 for "5+ years"). Null if not stated.
+   - `years_resume_estimated`: integer estimate of relevant industry experience from the resume (post-degree, in roles relevant to the job). Round down.
+   - `degree_required`: highest degree the posting requires (e.g., "PhD", "MS", "BS"). Null if not stated.
+   - `degree_resume`: highest relevant degree on the resume.
+   - `degree_match`: "meets_or_exceeds" if resume degree >= required (or if no degree was required), "below" if resume degree is lower, "unspecified" if posting didn't specify.
 
-5. Assess ATS (Applicant Tracking System) compatibility — distinct from qualification:
-   - `keyword_matches`: important keywords from the posting that DO appear in the resume (focus on hard skills, tools, certifications, exact technologies — not generic words like "team" or "develop")
-   - `keyword_gaps`: important keywords from the posting that are MISSING from the resume (these are what the candidate should add for keyword density, when they legitimately have the experience)
-   - `format_warnings`: resume format issues you can detect that might trip up an ATS parser (tables, complex layouts, unusual section headings) — empty list if none
-   - `ats_score`: 0-100 estimate of keyword density alignment. ATS score and qualification score can diverge — a candidate may be highly qualified but lack the exact vocabulary, or keyword-match well without truly meeting requirements.
+4. Extract ATS keyword data:
+   - `keyword_matches`: important keywords/phrases from the posting that DO appear in the resume (focus on hard skills, tools, technologies, certifications — not generic words like "team" or "develop")
+   - `keyword_gaps`: important keywords from the posting that are MISSING from the resume
+   - `format_warnings`: resume format issues that might trip up an ATS parser (tables, complex layouts, unusual section headings) — empty list if none
 
-Be terse. Ground claims in what's actually in the resume."""
+5. Provide a 2-3 sentence `rationale` summarizing the overall fit honestly.
+
+Be terse. Ground every claim in what's actually in the resume. The Python pipeline derives the qualification and ATS scores from this extraction — do NOT pick scores yourself."""
 
 
 def analyze_job(client: anthropic.Anthropic, resume: str, job: dict) -> tuple[JobAnalysis | None, str]:
-    """Returns (analysis, posting_text). posting_text is saved for tailor.py."""
+    """Returns (analysis, posting_text). posting_text is saved for tailor.py / audit.py."""
     job_text = html_to_text(job["content_html"])
     if len(job_text) < 100:
         return None, job_text
@@ -642,8 +781,23 @@ def main() -> None:
         for j in jobs:
             prerank = j.get("prerank_score")
             ps = f" (prerank {prerank}/10)" if prerank is not None else ""
-            print(f"  [{j.get('source','?')}]{ps} {j['title']} @ {j['company']}\n      {j.get('url','')}", file=sys.stderr)
+            print(
+                f"  [{j.get('source','?')}]{ps} {j['title']} @ {j['company']}\n"
+                f"      {j.get('url','')}",
+                file=sys.stderr,
+            )
         sys.exit(0)
+
+    # Pre-compute resume embedding once if sentence-transformers is available.
+    resume_embedding = None
+    if _ST_AVAILABLE:
+        model = get_embedding_model()
+        if model is not None:
+            resume_embedding = model.encode(resume, convert_to_numpy=True)
+    else:
+        print("(sentence-transformers not installed — domain_fit_score will be omitted; "
+              "install with `pip install sentence-transformers` to enable)",
+              file=sys.stderr)
 
     results: list[dict] = []
 
@@ -658,12 +812,20 @@ def main() -> None:
         analysis, posting_text = analyze_job(client, resume, job)
         if analysis is None:
             continue
+
+        # Derive scores deterministically from the extraction.
+        qm = analysis.qualification_match
+        ats = analysis.ats_assessment
+        score, verdict, score_components = derive_qualification_score(qm)
+        ats_score, ats_components = derive_ats_score(ats)
+        domain_fit = compute_domain_fit(resume_embedding, posting_text) if resume_embedding is not None else None
+
         posted_at = job.get("posted_at")
-        reqs = analysis.qualification_match.requirements
         result = {
-            "score": analysis.qualification_match.score,
-            "verdict": analysis.qualification_match.verdict,
-            "ats_score": analysis.ats_assessment.ats_score,
+            "score": score,
+            "verdict": verdict,
+            "ats_score": ats_score,
+            "domain_fit_score": domain_fit,
             "title": job["title"],
             "company": job["company"],
             "location": job["location"],
@@ -671,25 +833,29 @@ def main() -> None:
             "url": job["url"],
             "posted_at": posted_at.isoformat() if posted_at else "",
             "prerank_score": prerank,
-            # Flat lists derived from structured requirements (for CSV).
-            "matched": [r.requirement for r in reqs if r.met],
-            "missing": [r.requirement for r in reqs if not r.met],
-            # Full per-requirement evidence (in JSON only — see audit.py).
-            "requirements_evidence": [r.model_dump() for r in reqs],
-            "rationale": analysis.qualification_match.rationale,
-            "ats_keyword_matches": analysis.ats_assessment.keyword_matches,
-            "ats_keyword_gaps": analysis.ats_assessment.keyword_gaps,
-            "ats_format_warnings": analysis.ats_assessment.format_warnings,
+            "matched": [r.requirement for r in qm.requirements if r.met],
+            "missing": [r.requirement for r in qm.requirements if not r.met],
+            "rationale": qm.rationale,
+            "ats_keyword_matches": ats.keyword_matches,
+            "ats_keyword_gaps": ats.keyword_gaps,
+            "ats_format_warnings": ats.format_warnings,
             "requirements_found": analysis.requirements_section.found,
             "requirements_heading": analysis.requirements_section.section_heading,
             "requirements_text": analysis.requirements_section.text,
-            # Stored for tailor.py and audit.py — full extracted posting text.
+            # Score derivation transparency.
+            "score_components": score_components,
+            "ats_components": ats_components,
+            "breakdown": qm.breakdown.model_dump(),
+            # Full per-requirement evidence (in JSON only — see audit.py).
+            "requirements_evidence": [r.model_dump() for r in qm.requirements],
+            # Stored for tailor.py and audit.py.
             "posting_text": posting_text,
         }
         results.append(result)
+        df_str = f", domain {domain_fit}/100" if domain_fit is not None else ""
         print(
-            f"    -> {result['verdict']} ({result['score']}/100), "
-            f"ATS {result['ats_score']}/100",
+            f"    -> {verdict} ({score}/100), ATS {ats_score}/100{df_str}  "
+            f"[{score_components.get('requirements_met', 0)}/{score_components.get('requirements_total', 0)} reqs met]",
             file=sys.stderr,
         )
 
@@ -699,18 +865,22 @@ def main() -> None:
 
     with RESULTS_CSV.open("w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=[
-            "score", "verdict", "ats_score", "title", "company", "location",
-            "source", "url", "posted_at", "prerank_score",
+            "score", "verdict", "ats_score", "domain_fit_score",
+            "title", "company", "location", "source", "url", "posted_at",
+            "prerank_score",
+            "requirements_met", "requirements_total",
             "missing", "matched", "ats_keyword_gaps", "ats_keyword_matches",
             "rationale", "ats_format_warnings",
             "requirements_heading", "requirements_text",
         ])
         writer.writeheader()
         for r in results:
+            sc = r["score_components"]
             writer.writerow({
                 "score": r["score"],
                 "verdict": r["verdict"],
                 "ats_score": r["ats_score"],
+                "domain_fit_score": r["domain_fit_score"] if r["domain_fit_score"] is not None else "",
                 "title": r["title"],
                 "company": r["company"],
                 "location": r["location"],
@@ -718,6 +888,8 @@ def main() -> None:
                 "url": r["url"],
                 "posted_at": r["posted_at"],
                 "prerank_score": r["prerank_score"] if r["prerank_score"] is not None else "",
+                "requirements_met": sc.get("requirements_met", ""),
+                "requirements_total": sc.get("requirements_total", ""),
                 "missing": "; ".join(r["missing"]),
                 "matched": "; ".join(r["matched"]),
                 "ats_keyword_gaps": "; ".join(r["ats_keyword_gaps"]),
@@ -732,7 +904,8 @@ def main() -> None:
         f"\nDone. Wrote {len(results)} results to {RESULTS_CSV.name} "
         f"and {RESULTS_JSON.name}.\n"
         f"Next: open {RESULTS_CSV.name} (URL column links to apply pages), "
-        f"then run `python tailor.py --top 3` to generate tailored resumes.",
+        f"then run `python tailor.py --top 3` to generate tailored resumes, "
+        f"or `python audit.py <url>` to inspect any score in detail.",
         file=sys.stderr,
     )
 
