@@ -4,13 +4,11 @@
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/aa9gj/fitcast/blob/main/fitcast.ipynb)
 
-A small tool that scrapes public job boards, asks Claude to find the requirements section in each posting, predicts whether your resume qualifies you for the role, scores ATS keyword alignment, and generates tailored resumes for top matches. Outputs ranked CSV/JSON.
+A small CLI that scrapes public job boards, asks Claude to find the requirements section in each posting, and predicts whether your resume qualifies you for the role — with a transparent score derivation, ATS-keyword matching against the O*NET skill ontology, and an option to generate per-job tailored resumes.
 
 ## Quick start
 
-**No install? Click the Colab badge above** to run everything in your browser. You'll just need an Anthropic API key (see [What it costs you](#what-it-costs-you)).
-
-The CLI version below requires **Python 3.10+**. If your default `python3` is older, use a newer one explicitly (e.g. `python3.11`, `python3.12`).
+Requires **Python 3.10+**.
 
 ```bash
 git clone https://github.com/aa9gj/fitcast
@@ -25,385 +23,52 @@ cp resume.example.md resume.md
 $EDITOR resume.md       # paste your real resume in markdown
 
 export ANTHROPIC_API_KEY=sk-ant-...
-python pipeline.py                   # find + score jobs
-python tailor.py --top 3             # tailor a resume for your top 3 matches
+python pipeline.py
 ```
 
-Open `results.csv` in Google Sheets or Excel — the URL column links straight to each job's apply page. Tailored resumes land in `tailored/`.
-
-## What it costs you
-
-There's **no subscription** — the tool is free, you only pay Anthropic for the API calls it makes on your behalf.
-
-**Anthropic API pricing** (per million tokens; ~4 characters = 1 token):
-
-| Model | Input | Output | Used for |
-|---|---|---|---|
-| **Haiku 4.5** | $1.00 | $5.00 | Cheap pre-rank pass |
-| **Sonnet 4.6** | $3.00 | $15.00 | Deep analysis + tailoring (default) |
-| **Opus 4.7** | $15.00 | $75.00 | Optional, ~2.5× more nuance on borderline cases |
-
-**Per individual call:**
-
-| Step | Model | Cost per call |
-|---|---|---|
-| Pre-rank | Haiku 4.5 | ~$0.0007 |
-| Deep analyze | Sonnet 4.6 | ~$0.02 – $0.04 |
-| Tailor | Sonnet 4.6 | ~$0.04 – $0.07 |
-
-**Per typical run** (default config — pre-rank 100 candidates, deep-analyze top 10, tailor top 3):
-
-| Step | Subtotal |
-|---|---|
-| Pre-rank 100 candidates | $0.07 |
-| Deep-analyze 10 jobs | $0.30 |
-| Tailor 3 top matches | $0.15 |
-| **End-to-end** | **~$0.50 per run** |
-
-**Per month** if you're actively job-hunting (3 runs/week): **~$6/month**.
-
-For context: LinkedIn Premium Career is $40/month; most "AI resume tailoring" SaaS tools are $20–$60/month. You'd break even versus one month of LinkedIn Premium after roughly 80 runs.
-
-**Switching to Opus 4.7** multiplies the deep-analyze and tailor costs by ~2.5× — about $1.20/run, ~$15/month at 3 runs/week.
-
-**Account setup:** Anthropic requires a minimum **$5 credit** to start using the API. That covers ~10 full runs at default settings — enough to decide if the tool is worth it before adding more.
-
-> *Note on prompt caching:* the pipeline uses Anthropic's prompt-caching API, but a typical resume + system prompt (~1,500 tokens) sits under the model's minimum cacheable-prefix size, so the cache is a silent no-op for most users. Affects cost, not correctness.
+Open `results.csv` in Google Sheets — sorted by score, URLs are clickable apply links.
 
 ## What you get
 
-`results.csv` is sorted by qualification score (best matches first). Key columns:
+Each run writes `results.csv` (sorted by qualification score) with columns: `score`, `verdict`, `ats_score`, `domain_fit_score`, `title`, `company`, `url`, `posted_at`, `missing` (requirements you don't meet), `matched`, `ats_skills_missing` (skills to add to your resume), `requirements_text` (verbatim from posting), and more.
 
-| Column | What's in it |
-|---|---|
-| `score` | 0–100 qualification fit — does the candidate actually meet the requirements? |
-| `verdict` | `qualified` (≥80) / `stretch` (50–79) / `not_qualified` (<50) |
-| `ats_score` | 0–100 skill-overlap percentage between posting and resume (O*NET ontology — fully reproducible) |
-| `domain_fit_score` | 0–100 topical similarity (resume × posting embedding cosine). Empty if `sentence-transformers` isn't installed. |
-| `title`, `company`, `location` | Self-explanatory |
-| `url` | **Direct link to apply** — opens in your browser |
-| `posted_at` | When the job was posted/updated |
-| `prerank_score` | 0–10 cheap-pass relevance score (only when prerank is enabled) |
-| `missing` | Requirements you don't meet |
-| `matched` | Requirements you do meet |
-| `ats_skills_missing` | Skills in the posting that don't appear in your resume — ATS optimization targets |
-| `ats_skills_matched` | Skills in both the posting AND your resume |
-| `rationale` | Claude's 2-3 sentence explanation |
-| `requirements_text` | Verbatim requirements section pulled from the posting |
+`results.json` adds the full per-requirement evidence chain and score-derivation breakdown — what `audit.py` prints in human-readable form.
 
-`results.json` has the same data plus:
-- Full posting text (used by `tailor.py` and `audit.py`)
-- A `requirements_evidence` array — one entry per requirement with `met`, `confidence`, and a specific quote/reference from your resume
-- `score_components`, `ats_components`, `breakdown` — the inputs that produced each score (see [How scoring works](#how-scoring-works))
+## Commands
 
-Use [`audit.py`](#audit-a-jobs-score) to print all of this human-readably for any job.
+| Command | What it does | Cost |
+|---|---|---|
+| `python pipeline.py` | Scrape + score + write `results.csv` | ~$0.30/run |
+| `python audit.py <url>` | Show the full score math + evidence for one job | ~$0.04 |
+| `python tailor.py --top 3` | Generate tailored resumes for top matches | ~$0.05 each |
+| `python check_resume_format.py` | Test your real PDF/DOCX against an ATS parser | $0 (local) |
+| `python extract_keywords.py` | Get personalized search keywords from your resume | ~$0.02 |
+| `python track.py mark <url>` | Mark a job as applied (auto-skip in future runs) | $0 |
+| `python compare_resumes.py r1.md r2.md --top 3` | A/B test two resume versions on the same jobs | ~$0.15 |
+| `python bootstrap_ontologies.py` | Refresh the O*NET skill catalog | $0 (download only) |
 
-## How scoring works
+Pipeline flags: `--dry-run`, `--max-jobs N`, `--include-seen`, `--watch --interval 24h`. See `python pipeline.py --help`.
 
-Each job gets **four scores**. None of them are LLM-judged numbers. Three are *derived deterministically* from explicit inputs (per-requirement evidence; ontology-based skill overlap; embedding similarity). One is a cheap pre-filter from a small LLM. Claude's role is structured extraction; Python does the arithmetic.
+## Cost summary
 
-### 1. Pre-rank score (0–10, Haiku 4.5 — LLM judgment)
+~**$6/month** at 3 runs/week (Sonnet 4.6 default). Compare LinkedIn Premium at $40/month. Anthropic requires a $5 minimum credit to start. Full breakdown: [docs/cost.md](docs/cost.md).
 
-A cheap one-shot relevance score generated *before* the expensive deep analysis. Asks: "given the candidate's resume, how plausibly relevant is this job at all?"
+## Documentation
 
-- **0–3**: clearly unrelated
-- **4–6**: tangentially related — maybe worth considering
-- **7–10**: clearly relevant
+- **[How scoring works](docs/scoring.md)** — the math behind every number (qualification, ATS, domain fit, pre-rank). Read this if you want to understand or defend a score.
+- **[Architecture](docs/architecture.md)** — pipeline design, choice of model, the role of each component.
+- **[Data sources](docs/sources.md)** — Greenhouse / Lever / Ashby / The Muse, the bootstrap script, where to find slugs.
+- **[Customizing](docs/customizing.md)** — config knobs, watch mode, application tracking, advanced usage.
+- **[Cost details](docs/cost.md)** — Anthropic pricing, per-call costs, monthly estimates.
 
-Only jobs scoring ≥ `prerank.threshold` (default 5) survive to deep analysis. Raise the threshold to 7+ if you're seeing too many irrelevant jobs in your `results.csv`.
-
-This is the only score that's still pure LLM judgment, because it runs on 100+ candidates and needs to be cheap.
-
-### 2. Qualification score (0–100, derived from evidence)
-
-Claude extracts per-requirement evidence and quantitative inputs; the pipeline DERIVES the score using a transparent formula:
-
-```
-base_score = (requirements_met / requirements_total) × 100
-
-degree_penalty = -30 if resume degree is below the posting's requirement, else 0
-years_penalty  = -5 per year short on experience, capped at -30
-
-score = clamp(base_score + degree_penalty + years_penalty, 0, 100)
-verdict = "qualified" if score >= 80 else "stretch" if score >= 50 else "not_qualified"
-```
-
-Every input is in `results.json` under `score_components` and `breakdown`:
-
-| Field | Example |
-|---|---|
-| `requirements_met` / `requirements_total` | 6 / 9 |
-| `met_ratio` | 0.67 |
-| `base_score` | 67 |
-| `years_required` / `years_resume_estimated` | 5 / 3 |
-| `years_penalty` | -10 |
-| `degree_required` / `degree_resume` / `degree_match` | "PhD" / "PhD" / "meets_or_exceeds" |
-| `degree_penalty` | 0 |
-| Final `score` | 57 → `stretch` |
-
-You can hand-check any score: "6/9 = 67 base, minus 10 for years, equals 57 → stretch." Run `python audit.py <url>` to print this breakdown for any job.
-
-### 3. ATS score (0–100, hybrid: O*NET ontology + LLM extraction)
-
-Two independent skill-extraction passes are run on both the posting and the resume; the results are unioned and deduplicated:
-
-**Pass A — O*NET ontology (deterministic)**
-Both texts are scanned against an explicit ontology — [O*NET](https://www.onetonline.org/) (US Department of Labor's occupational skills database, public domain) plus a curated supplement of modern tech/data/methodology terms it doesn't index (`data/skills_supplement.txt`). The skill catalog (`data/skills.json`) ships with the repo: ~8,800 skills after filtering noise. Same text → exact same skills, every run.
-
-**Pass B — Claude keyword extraction (broad coverage)**
-Claude also identifies distinctive keywords from the posting that the ontology might miss: brand-new tech, niche tools, soft skills, multi-word phrases not in O*NET. Catches things like specific company-internal tools, freshly-coined ML terms, or domain phrases like "claims substantiation" if not in the supplement.
-
-**Combined score:**
-```
-posting_skills = (O*NET skills in posting) ∪ (Claude's distinctive keywords)
-resume_skills  = (O*NET skills in resume)  ∪ (Claude's keyword_matches against resume)
-
-ats_score = |posting_skills ∩ resume_skills| / |posting_skills| × 100
-```
-
-Why hybrid? Pure ontology is fully reproducible but bounded by what's in O*NET (~8,800 skills) and can't catch context-aware mentions. Pure LLM extraction is broad but mood-dependent. Union of both = deterministic baseline + broader coverage. The score is more stable than pure LLM and broader than pure ontology.
-
-The component breakdown is in `results.json` under `ats_components`:
-- `onet_matched` / `onet_missing` — pure-ontology numbers (would be the score if Pass A only)
-- `llm_matched` / `llm_missing` — Claude's contribution
-- `skills_matched` / `skills_total` — final union (used for the score)
-
-Run `python audit.py <url>` to see all of this for any job.
-
-**Important caveat:** real ATSes vary widely (some keyword-match exact strings, some use embeddings, some don't auto-score at all — Greenhouse mostly defers to recruiters). Our hybrid score is a reasonable proxy for the keyword-matching kind, which is what most older enterprise ATSes still do. It's not a guarantee any specific ATS would give the same score.
-
-### 4. Domain fit score (0–100, embedding similarity — optional)
-
-Cosine similarity between [sentence-transformer](https://www.sbert.net/) embeddings of your resume and the job posting, scaled to 0–100. Captures *topical* similarity even when specific keywords differ ("data pipelines" ≈ "ETL workflows" ≈ "data flow infrastructure").
-
-Requires `sentence-transformers` installed (~500MB; included in `requirements.txt` by default — comment out the line to skip the install). When the dep is missing, `domain_fit_score` is simply omitted from results.
-
-### Why four different angles?
-
-The scores measure different things and can diverge — that's a feature, not a bug:
-
-- **High qualification, low ATS**: you've done the work but your resume uses different vocabulary than the posting. **Fix:** `python tailor.py`.
-- **High ATS, low qualification**: your resume keyword-matches but you don't have the actual experience. Tailoring won't help — be honest about your level.
-- **High domain fit, low qualification**: this is your *field* but not this specific role. Could indicate a good company to target with different roles.
-- **All four high**: clear apply.
-
-### Per-requirement evidence (the foundation)
-
-For every requirement found in the posting, `results.json` contains:
-
-| Field | Meaning |
-|---|---|
-| `requirement` | Short paraphrase of what the posting asked for |
-| `met` | `true` if your resume clearly demonstrates it, `false` otherwise |
-| `confidence` | How clearly the resume supports the assessment: `high` (explicit), `medium` (inferred from adjacent experience), `low` (ambiguous — consider clarifying your resume here) |
-| `evidence` | The specific quote or reference from your resume that supports the judgment, or "not mentioned in resume" / "resume shows 3 yrs vs 5+ required" for unmet requirements |
-
-The `met` field directly drives the qualification score (via `met_ratio`). `confidence: low` entries are good candidates to clarify in your resume.
-
-Run `python audit.py <url>` for any job to see the per-requirement evidence AND the full score derivation in one place.
-
-## Customize
-
-Everything's in `config.yaml`. Edit, re-run.
-
-**Filter to fresh jobs only:**
-
-```yaml
-posted_within_hours: 48   # only show jobs from the last 48 hours
-```
-
-(Comment out or remove the line to disable.)
-
-**Filter by keywords** (case-insensitive substring on title + body):
-
-```yaml
-keywords:
-  - data
-  - regulatory
-  - product manager
-```
-
-Empty list = no keyword filter.
-
-**Pre-rank a larger pool with cheap Haiku** (recommended; on by default):
-
-```yaml
-prerank:
-  enabled: true
-  threshold: 5         # 0-10 scale; jobs below this are dropped
-  max_candidates: 100  # cap the pre-rank pool to bound cost
-```
-
-This lets you scan up to 100 candidates per run for a few cents (Haiku 4.5), then deep-analyze just the most relevant `max_jobs`. Set `enabled: false` to skip.
-
-**Pick how many jobs to deep-analyze** (the main cost lever):
-
-```yaml
-max_jobs: 10
-```
-
-**Pick your sources.** The pipeline pulls from two at once and dedupes:
-
-- `greenhouse:` — hand-picked company boards (highest-quality data, verbatim full job descriptions)
-- `muse:` — a free public aggregator (no signup; you filter by category, level, location)
-
-Comment out either block to disable. See [Data sources](#data-sources) for the reasoning.
-
-## Tailor your resume for top matches
+## Run the tests
 
 ```bash
-python tailor.py --top 3                     # top 3 from results.json
-python tailor.py --top 5 --min-score 70      # only matches above qualification score 70
-python tailor.py <job-url-from-results.json> # one specific job
+pip install pytest
+pytest tests/
 ```
 
-Reads `results.json`, takes your master `resume.md`, and asks Claude to rewrite each as a tailored version that:
-
-- Leads with the most-relevant experience first
-- Uses the posting's vocabulary where you genuinely have the experience (helps with ATS keyword density)
-- Drops bullets clearly irrelevant to that specific job
-- Adds a "Changes Summary" at the bottom showing every edit and why it's honest
-
-**Important:** the prompt explicitly forbids inventing skills, inflating years, or fabricating achievements. Tailoring is *emphasis and vocabulary*, not fiction. Recruiters spot fabrication instantly.
-
-Output goes to `tailored/<company>_<title>.md`. To convert to DOCX for ATS upload:
-
-```bash
-pandoc tailored/foo.md -o foo.docx
-```
-
-(Most ATS uploaders prefer DOCX or PDF over Markdown.)
-
-Cost: ~$0.05 per tailored resume on Sonnet 4.6.
-
-## Audit a job's score
-
-After running `pipeline.py`, you can re-analyze any specific job in verbose mode to see exactly how it was judged:
-
-```bash
-python audit.py <job-url-from-results.json>
-```
-
-Prints (a) Claude's full reasoning chain, (b) per-requirement breakdown showing which lines from your resume were used as evidence for each requirement, (c) the score-derivation math (base + penalties), (d) ATS skills matched/missing (from the O*NET ontology), and (e) the verbatim requirements section.
-
-Use this when:
-- A score surprises you and you want to understand why
-- You suspect Claude misread your resume on a specific requirement
-- You're deciding whether to tailor for a `stretch` match — see exactly what's missing first
-
-Cost: ~$0.04 per audit (uses higher effort than the main run for more detailed reasoning).
-
-## Check whether your real PDF/DOCX would survive an ATS parser
-
-The pipeline scores using your clean `resume.md`, but actual ATSes parse PDF or DOCX files — and parsing is often imperfect (tables get jumbled, multi-column layouts read top-to-bottom instead of side-by-side, fancy fonts produce garbled text). If you have a real `resume.pdf` or `resume.docx` you'd actually upload, drop it in the project directory and run:
-
-```bash
-python check_resume_format.py
-```
-
-What it does:
-- Extracts text from the file using PyPDF2 (PDFs) or python-docx (DOCX), with deliberately *simple* parsing — mimicking what an old ATS does, no smart layout reconstruction
-- Compares the extracted text against your `resume.md`
-- Flags content loss, missing section headings, header/footer leakage, multi-column issues, encoding glitches, embedded tables
-- Saves the actual extracted text to `resume.extracted.<format>.txt` so you can see exactly what an ATS would receive
-
-This is a one-time check (re-run when you update your PDF). Doesn't affect any scoring — purely diagnostic.
-
-Output looks like:
-```
-Resume PDF/DOCX format check
-─────────────────────────────────────────
-Source:    resume.md
-Extract:   resume.pdf  (PDF)
-
-  resume.md      5,247 chars   800 words
-  resume.pdf     4,832 chars   720 words
-  word retention: 90%
-
-⚠  Multi-column layout detected on page 1.
-   Skills section may read jumbled in ATS.
-
-⚠  3 line(s) appear 3+ times — likely header/footer being parsed
-   into body content.
-
-Extracted text saved
-  resume.extracted.pdf.txt
-```
-
-## Auto-extract keywords from your resume
-
-Tired of curating the `keywords:` filter manually? Let Claude propose them from your resume:
-
-```bash
-python extract_keywords.py
-```
-
-Outputs a YAML block of 10–20 high-signal keywords (technologies, domains, role types) ready to paste into `config.yaml`'s `keywords:` section. Edit, prune, or extend.
-
-Cost: ~$0.005 per run.
-
-## Track which jobs you've applied to
-
-```bash
-python track.py mark https://job-boards.greenhouse.io/recursion/jobs/12345
-python track.py list                    # show everything, newest first
-python track.py list rejected           # filter by status
-python track.py remove https://...
-```
-
-Once a job is tracked, future runs of `pipeline.py` skip it automatically — no wasted API calls re-analyzing things you've already acted on.
-
-Status is free-form. Conventional values: `interested`, `applied`, `phone_screen`, `interview`, `offer`, `rejected`, `withdrew`.
-
-## Expand your company list (optional)
-
-`config.yaml` ships with ~8 hand-picked Greenhouse companies. To add hundreds more:
-
-```bash
-python bootstrap_companies.py           # preview
-python bootstrap_companies.py --write   # save to companies.bootstrap.yaml
-```
-
-Pulls from [SimplifyJobs](https://github.com/SimplifyJobs)'s community-maintained listings and extracts every Greenhouse slug (usually 500–1000). The pipeline picks them up automatically on the next run.
-
-Caveat: SimplifyJobs is intern/new-grad focused, so the *roles* it tracks won't match a senior search — but the *companies* are the same companies that also post senior roles.
-
-Re-run periodically to refresh. Delete `companies.bootstrap.yaml` to revert.
-
-## How it works
-
-1. **Scrape** — pulls jobs from Greenhouse + The Muse in parallel.
-2. **Filter** — date / keyword / already-applied filters; dedupes by URL.
-3. **Pre-rank (optional)** — Haiku 4.5 cheaply scores each candidate 0–10 for resume relevance; takes the top `max_jobs`.
-4. **Deep analyze** — Sonnet 4.6 (adaptive thinking, structured output) returns the verbatim requirements section, qualification verdict + score + matched/missing list, and ATS keyword assessment.
-5. **Rank & write** — sorts by qualification score, writes `results.csv` + `results.json`.
-6. **Tailor (separate command)** — `tailor.py` rewrites your resume per-job, staying strictly truthful.
-
-### Choice of model
-
-**Default is `claude-sonnet-4-6`** for deep analysis and tailoring. The pipeline is structured extraction + ranked match + careful rewriting — all well within Sonnet's wheelhouse. Opus 4.7 adds nuance on borderline cases but costs ~2.5× more per token.
-
-To switch deep-analysis to Opus, change `MODEL` at the top of `pipeline.py` and `tailor.py` to `claude-opus-4-7`.
-
-The pre-rank pass uses **`claude-haiku-4-5`** (cheapest, fastest model). The pre-rank prompt is intentionally simple — just a 0–10 relevance score — so Haiku is appropriate.
-
-## Data sources
-
-Two sources, both enabled by default. Results merged + deduplicated by URL.
-
-### Greenhouse (curated boards)
-
-Verbatim full job descriptions straight from each company's ATS — no scraping or aggregator middleware. The catch: there's no public directory of Greenhouse boards, so slugs have to be discovered one company at a time. The seed list is biotech/health-AI focused; use `bootstrap_companies.py` to expand it.
-
-### The Muse (aggregator)
-
-Queries [The Muse's public job API](https://www.themuse.com/developers/api/v2). No signup, no API key. You specify categories, levels, and locations.
-
-Tradeoff: descriptions can be slightly thinner than direct-from-Greenhouse, but for predict-the-requirements + qualify-or-not it's almost always enough text. And you trade list-maintenance work for a few config knobs.
-
-### Why both?
-
-Greenhouse gives you the highest-quality data for specific companies you've targeted; The Muse gives you breadth across companies you haven't heard of yet. Together — with dedup — you get both, with no list to maintain beyond your ~10 favorite companies.
+57 tests covering the score-derivation functions, the helper utilities, and the skill extractor. All pure Python — no API calls.
 
 ## License
 
