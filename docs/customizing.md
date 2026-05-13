@@ -199,6 +199,41 @@ For production use, **prefer cron**:
 
 Cron gives you logs and email-on-failure. Watch mode is simpler for dev/testing.
 
+## Tailor a resume + cover letter for a specific job
+
+After running `pipeline.py`, generate a tailored LaTeX resume and a LaTeX cover letter (with web-searched recent company news) for the jobs you actually want to apply to:
+
+```bash
+python tailor.py --top 3                  # top 3 by qualification score
+python tailor.py <url>                    # one specific job from results.json
+python tailor.py --top 5 --min-score 70   # only above a score floor
+python tailor.py --top 3 --no-cover       # tailored resume only
+python tailor.py <url> --no-resume        # cover letter only
+```
+
+For each job you get three files in `tailored/`:
+
+| File | What it is |
+|---|---|
+| `<slug>_resume.tex` | Self-contained LaTeX resume — reordered/rephrased to match the posting's vocabulary, never inventing experience |
+| `<slug>_cover.tex`  | LaTeX cover letter — opens with a recent specific thing about the company (product launch, funding, paper, partnership) found via web search; ~250-350 words |
+| `<slug>_changes.md` | Audit: every material change made to the resume, citing the line in your master resume that justifies it |
+
+**Compile to PDF:**
+
+```bash
+pdflatex tailored/<slug>_resume.tex     # standard LaTeX distro (TeX Live, MacTeX)
+tectonic tailored/<slug>_resume.tex     # lighter alternative, auto-fetches packages
+```
+
+Or upload the `.tex` to https://overleaf.com if you don't have a local LaTeX install.
+
+**Cost:** ~$0.15 per job (resume call ~$0.05 + cover letter call with up to 3 web searches ~$0.10).
+
+**Voice:** Both documents use deslop guidance baked into the prompts — no "I'm excited to apply", no verb-front bullets ("Spearheaded", "Leveraged"), no tricolons in every paragraph, no em-dash overuse. If you spot AI-cliche output, the model is drifting; re-run or open an issue.
+
+**Truth constraint:** The tailoring prompt explicitly forbids inventing skills, inflating years, or fabricating metrics. The cover letter prompt forbids inventing claims about the candidate AND about the company (if a search didn't verify it, it doesn't go in). The `_changes.md` audit lets you spot-check.
+
 ## A/B test resume versions
 
 Iterating on resume wording? Compare multiple versions on the same jobs:
