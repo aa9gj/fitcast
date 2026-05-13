@@ -18,7 +18,8 @@ A "token" is roughly 4 characters of English text.
 |---|---|---|
 | Pre-rank | Haiku 4.5 | ~$0.0007 |
 | Deep analyze | Sonnet 4.6 | ~$0.025–$0.045 |
-| Tailor | Sonnet 4.6 | ~$0.04–$0.07 |
+| Tailor resume | Sonnet 4.6 | ~$0.04–$0.07 |
+| Cover letter (with web search) | Sonnet 4.6 + 3 web searches @ $0.01 ea | ~$0.08–$0.10 |
 | Audit | Sonnet 4.6 (high effort) | ~$0.04 |
 | Extract keywords | Sonnet 4.6 | ~$0.02 |
 | Compare resumes | Sonnet 4.6 | ~$0.025 per (job × resume) pair |
@@ -31,14 +32,14 @@ Default config (pre-rank 100 candidates, deep-analyze top 10, tailor top 3):
 |---|---|
 | Pre-rank 100 candidates | $0.07 |
 | Deep-analyze 10 jobs | $0.30 |
-| Tailor 3 top matches | $0.15 |
-| **End-to-end** | **~$0.50 per run** |
+| Tailor 3 top matches (resume + cover letter each) | $0.45 |
+| **End-to-end** | **~$0.80 per run** |
 
 ## Per month
 
 If you actively job-hunt — 3 runs/week:
 
-**~$6/month**
+**~$10/month**
 
 For context:
 - LinkedIn Premium Career: $40/month

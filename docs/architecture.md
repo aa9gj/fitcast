@@ -88,7 +88,7 @@ Auto-apply violates essentially every ATS's terms of service and reads as spam t
 |---|---|
 | `pipeline.py` | Main scrape → score → rank loop. The orchestrator. |
 | `audit.py` | Re-analyze one job in verbose mode (uses pipeline.py's functions) |
-| `tailor.py` | Per-job resume rewrite (separate Claude call) |
+| `tailor.py` | Per-job tailored LaTeX resume + LaTeX cover letter (uses Claude web_search to anchor the cover letter in recent company news) |
 | `compare_resumes.py` | A/B test multiple resume versions against the same jobs |
 | `track.py` | applied.json management |
 | `extract_keywords.py` | Suggest config.yaml keywords from resume |
@@ -98,6 +98,6 @@ Auto-apply violates essentially every ATS's terms of service and reads as spam t
 | `skill_extractor.py` | Reusable: load skills.json + n-gram match |
 | `data/skills.json` | Pre-built O*NET + supplement skill catalog (committed) |
 | `data/skills_supplement.txt` | Hand-curated modern tech terms (editable) |
-| `tests/` | pytest suite for pure functions (57 tests) |
+| `tests/` | pytest suite for pure functions (105 tests) |
 | `smoke_test.sh` | Bash script: verify every component end-to-end (`./smoke_test.sh [--paid]`) |
 | `fitcast.ipynb` | Colab harness — clones the repo and shells out to `python pipeline.py`/`tailor.py` |

@@ -40,7 +40,7 @@ Each run writes `results.csv` (sorted by qualification score) with columns: `sco
 |---|---|---|
 | `python pipeline.py` | Scrape + score + write `results.csv` | ~$0.30/run |
 | `python audit.py <url>` | Show the full score math + evidence for one job | ~$0.04 |
-| `python tailor.py --top 3` | Generate tailored resumes for top matches | ~$0.05 each |
+| `python tailor.py --top 3` | Tailored LaTeX resume + cover letter (web-searches recent company news) per top match | ~$0.15 each |
 | `python check_resume_format.py` | Test your real PDF/DOCX against an ATS parser | $0 (local) |
 | `python extract_keywords.py` | Get personalized search keywords from your resume | ~$0.02 |
 | `python track.py mark <url>` | Mark a job as applied (auto-skip in future runs) | $0 |
@@ -53,7 +53,7 @@ Pipeline flags: `--dry-run`, `--max-jobs N`, `--include-seen`, `--watch --interv
 
 ## Cost summary
 
-~**$6/month** at 3 runs/week (Sonnet 4.6 default). Compare LinkedIn Premium at $40/month. Anthropic requires a $5 minimum credit to start. Full breakdown: [docs/cost.md](docs/cost.md).
+~**$10/month** at 3 runs/week (Sonnet 4.6 default, including tailored resume + cover letter for top 3). Compare LinkedIn Premium at $40/month. Anthropic requires a $5 minimum credit to start. Full breakdown: [docs/cost.md](docs/cost.md).
 
 ## Documentation
 
@@ -70,7 +70,7 @@ pip install pytest
 pytest tests/
 ```
 
-57 tests covering the score-derivation functions, the helper utilities, and the skill extractor. All pure Python — no API calls.
+105 tests covering the score-derivation functions, the location/salary/time-window filters, and the skill extractor. All pure Python — no API calls.
 
 ## License
 
