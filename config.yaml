@@ -1,0 +1,73 @@
+# Sources to scrape from. Both can be enabled at once; results are merged
+# and deduplicated by URL.
+
+# ─── Greenhouse: hand-picked company boards ───────────────────────────────
+# Highest-quality data — verbatim full job descriptions straight from each
+# company's ATS. Find slugs at boards.greenhouse.io/<slug>. The script
+# silently skips any slug that 404s, so feel free to over-include.
+# Comment this whole block out to disable Greenhouse.
+greenhouse:
+  companies:
+    - recursionpharmaceuticals  # AI drug discovery
+    - ginkgobioworks            # synthetic biology / biotech platform
+    - absci                     # AI drug discovery
+    - flatironhealth            # oncology clinical / regulatory data
+    - freenome                  # cancer diagnostics (multi-omics)
+    - natera                    # genetic testing
+    - komodohealth              # healthcare data analytics
+    - doximity                  # medical professional network
+
+# ─── The Muse: public aggregator API (no auth, no slug list) ─────────────
+# The Muse handles company discovery for you — broader coverage with zero
+# list maintenance. Filter by category, level, and location instead.
+# Comment this whole block out to disable The Muse.
+muse:
+  # Categories must match The Muse's exact taxonomy. Common ones with good
+  # coverage: "Data and Analytics", "Healthcare", "Project Management",
+  # "Science and Engineering", "Software Engineering", "Business Operations",
+  # "Accounting and Finance", "Account Management", "Marketing".
+  # See https://www.themuse.com/developers/api/v2 for the full list.
+  categories:
+    - Data and Analytics
+    - Healthcare
+    - Project Management
+    - Science and Engineering
+  # Levels: "Internship", "Entry Level", "Mid Level", "Senior Level",
+  # "Management", "Senior Management".
+  levels:
+    - Senior Level
+    - Mid Level
+  # Locations: city names like "New York, NY" or "Flexible / Remote".
+  locations:
+    - Flexible / Remote
+  max_pages: 2  # 20 results per page
+
+# ─── Filtering & cost control ────────────────────────────────────────────
+# Optional case-insensitive substring filter applied to title + body of every
+# scraped job, regardless of source. Empty list = no filter.
+keywords:
+  - data
+  - AI
+  - digital
+  - bioinform
+  - computational
+  - regulatory
+  - product manager
+  - business analyst
+  - solutions
+
+# How many jobs to deep-analyze per run with the main model. Cost lever.
+max_jobs: 10
+
+# Optional: only include jobs posted/updated within the last N hours.
+# Comment out (or remove) to disable the date filter.
+# posted_within_hours: 48
+
+# Optional cheap pre-rank pass with Haiku 4.5 (~$0.0007 per candidate).
+# When enabled, every candidate gets a quick relevance score and only the
+# top max_jobs are deep-analyzed. Lets you scan a much larger pool for a
+# few cents while keeping deep-analysis costs flat.
+prerank:
+  enabled: true
+  threshold: 5         # 0-10 scale; jobs below this are dropped
+  max_candidates: 100  # cap pre-rank pool size to bound cost
