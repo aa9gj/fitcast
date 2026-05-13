@@ -92,9 +92,12 @@ Auto-apply violates essentially every ATS's terms of service and reads as spam t
 | `compare_resumes.py` | A/B test multiple resume versions against the same jobs |
 | `track.py` | applied.json management |
 | `extract_keywords.py` | Suggest config.yaml keywords from resume |
-| `bootstrap_ontologies.py` | Download/refresh O*NET skill catalog |
+| `bootstrap_companies.py` | Add Greenhouse company slugs from SimplifyJobs (extends config.yaml's list) |
+| `bootstrap_ontologies.py` | Download/refresh the O*NET skill catalog (`data/skills.json`) |
 | `check_resume_format.py` | Test PDF/DOCX extraction against ATS parsers |
 | `skill_extractor.py` | Reusable: load skills.json + n-gram match |
 | `data/skills.json` | Pre-built O*NET + supplement skill catalog (committed) |
 | `data/skills_supplement.txt` | Hand-curated modern tech terms (editable) |
 | `tests/` | pytest suite for pure functions (57 tests) |
+| `smoke_test.sh` | Bash script: verify every component end-to-end (`./smoke_test.sh [--paid]`) |
+| `fitcast.ipynb` | Colab harness — clones the repo and shells out to `python pipeline.py`/`tailor.py` |

@@ -45,7 +45,9 @@ Each run writes `results.csv` (sorted by qualification score) with columns: `sco
 | `python extract_keywords.py` | Get personalized search keywords from your resume | ~$0.02 |
 | `python track.py mark <url>` | Mark a job as applied (auto-skip in future runs) | $0 |
 | `python compare_resumes.py r1.md r2.md --top 3` | A/B test two resume versions on the same jobs | ~$0.15 |
+| `python bootstrap_companies.py --write` | Add 500–1000 Greenhouse companies from SimplifyJobs | $0 (download only) |
 | `python bootstrap_ontologies.py` | Refresh the O*NET skill catalog | $0 (download only) |
+| `./smoke_test.sh [--paid]` | Verify every component end-to-end (~$0.20 with `--paid`) | $0 by default |
 
 Pipeline flags: `--dry-run`, `--max-jobs N`, `--include-seen`, `--watch --interval 24h`. See `python pipeline.py --help`.
 
