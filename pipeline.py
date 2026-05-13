@@ -58,11 +58,17 @@ class RequirementsSection(BaseModel):
     text: str = ""
 
 
+class RequirementEvidence(BaseModel):
+    requirement: str
+    met: bool
+    confidence: Literal["high", "medium", "low"]
+    evidence: str
+
+
 class QualificationMatch(BaseModel):
     score: int = Field(ge=0, le=100)
     verdict: Literal["qualified", "stretch", "not_qualified"]
-    matched_requirements: list[str]
-    missing_requirements: list[str]
+    requirements: list[RequirementEvidence]
     rationale: str
 
 
@@ -97,11 +103,37 @@ ANALYSIS_SCHEMA: dict = {
             "properties": {
                 "score": {"type": "integer", "description": "0-100. 90+ qualified, 60-89 stretch, <60 not qualified."},
                 "verdict": {"type": "string", "enum": ["qualified", "stretch", "not_qualified"]},
-                "matched_requirements": {"type": "array", "items": {"type": "string"}},
-                "missing_requirements": {"type": "array", "items": {"type": "string"}},
+                "requirements": {
+                    "type": "array",
+                    "description": "One entry per requirement found in the posting's requirements section.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "requirement": {
+                                "type": "string",
+                                "description": "Short paraphrase of the requirement as stated in the posting.",
+                            },
+                            "met": {
+                                "type": "boolean",
+                                "description": "Whether the candidate's resume clearly demonstrates this requirement.",
+                            },
+                            "confidence": {
+                                "type": "string",
+                                "enum": ["high", "medium", "low"],
+                                "description": "high = clear evidence in resume, medium = inferred, low = ambiguous.",
+                            },
+                            "evidence": {
+                                "type": "string",
+                                "description": "Specific quote/reference from the resume supporting the assessment, or 'not mentioned in resume' / 'resume shows X yrs vs N+ required' for unmet ones.",
+                            },
+                        },
+                        "required": ["requirement", "met", "confidence", "evidence"],
+                        "additionalProperties": False,
+                    },
+                },
                 "rationale": {"type": "string", "description": "2-3 sentence honest explanation."},
             },
-            "required": ["score", "verdict", "matched_requirements", "missing_requirements", "rationale"],
+            "required": ["score", "verdict", "requirements", "rationale"],
             "additionalProperties": False,
         },
         "ats_assessment": {
@@ -483,12 +515,16 @@ SYSTEM_INSTRUCTIONS = """You are a careful job-application analyst. For each job
 
 1. Find the section that lists minimum requirements / qualifications / what the candidate must have. Common headings include "Requirements", "Minimum Qualifications", "Basic Qualifications", "What You Bring", "Qualifications", "Required Experience", "Required Skills". Quote the section verbatim in `requirements_section.text`. If no clear section exists, set `found: false` and leave `text` empty.
 
-2. Compare the candidate's resume (provided below) to those requirements. Be honest — do not inflate scores:
+2. Decide the verdict honestly — do not inflate:
    - "qualified": clearly meets all hard requirements (degree level, years of experience, must-have skills)
    - "stretch": meets most but is missing 1-2 specific items, or is close on years of experience
-   - "not_qualified": missing degree level, fundamental skill, or has substantially less experience than required
+   - "not_qualified": missing degree level, fundamental skill, or substantially less experience than required
 
-3. List specific matched and missing requirements as short bullet phrases (e.g., "5+ years Python", "AWS experience", "PhD in CS or related field").
+3. For EACH requirement you identified in step 1, output an entry in `requirements` containing:
+   - `requirement`: a short paraphrase of the requirement (e.g., "5+ years Python in production", "PhD in CS or related field")
+   - `met`: true if the resume clearly demonstrates it, false otherwise
+   - `confidence`: "high" if the resume explicitly supports your judgment, "medium" if you're inferring (e.g., adjacent experience), "low" if it's genuinely ambiguous
+   - `evidence`: a specific quote or reference from the resume (e.g., "Resume bullet: 'Developed reproducible Python pipelines' at Colgate Jun 2023-Present, ~3 yrs"). For unmet requirements, write something concrete like "not mentioned in resume" or "resume shows 3 yrs of X vs 5+ required". This is the most important field — the user audits decisions through it.
 
 4. Score the qualification match 0-100 consistent with the verdict: 90+ qualified, 60-89 stretch, <60 not qualified.
 
@@ -623,6 +659,7 @@ def main() -> None:
         if analysis is None:
             continue
         posted_at = job.get("posted_at")
+        reqs = analysis.qualification_match.requirements
         result = {
             "score": analysis.qualification_match.score,
             "verdict": analysis.qualification_match.verdict,
@@ -634,8 +671,11 @@ def main() -> None:
             "url": job["url"],
             "posted_at": posted_at.isoformat() if posted_at else "",
             "prerank_score": prerank,
-            "matched": analysis.qualification_match.matched_requirements,
-            "missing": analysis.qualification_match.missing_requirements,
+            # Flat lists derived from structured requirements (for CSV).
+            "matched": [r.requirement for r in reqs if r.met],
+            "missing": [r.requirement for r in reqs if not r.met],
+            # Full per-requirement evidence (in JSON only — see audit.py).
+            "requirements_evidence": [r.model_dump() for r in reqs],
             "rationale": analysis.qualification_match.rationale,
             "ats_keyword_matches": analysis.ats_assessment.keyword_matches,
             "ats_keyword_gaps": analysis.ats_assessment.keyword_gaps,
@@ -643,7 +683,7 @@ def main() -> None:
             "requirements_found": analysis.requirements_section.found,
             "requirements_heading": analysis.requirements_section.section_heading,
             "requirements_text": analysis.requirements_section.text,
-            # Stored for tailor.py — full extracted posting text.
+            # Stored for tailor.py and audit.py — full extracted posting text.
             "posting_text": posting_text,
         }
         results.append(result)
