@@ -1,0 +1,119 @@
+# Manually-curated supplement to O*NET — modern tech / data / business terms
+# that O*NET doesn't index (or only includes inside specific product names).
+#
+# Lines starting with # are comments. Blank lines ignored. One skill per line.
+# Re-run `python bootstrap_ontologies.py` to merge into data/skills.json.
+#
+# When adding entries, prefer terms that:
+#  - Appear verbatim in real job postings (use existing language, not made-up jargon)
+#  - Are missing from O*NET (check first with: grep -i "<term>" data/skills.json)
+#  - Are specific enough to be discriminating (not just "data" or "AI")
+
+# ─── Cloud / infra ──────────────────────────────────────────────────────────
+AWS
+GCP
+Google Cloud
+Azure
+Kubernetes
+Docker
+Terraform
+CloudFormation
+Snowflake
+Databricks
+Apache Airflow
+Apache Kafka
+Apache Spark
+
+# ─── Data / analytics ───────────────────────────────────────────────────────
+SQL
+NoSQL
+PostgreSQL
+MongoDB
+Redis
+ETL
+ELT
+dbt
+Looker
+Power BI
+
+# ─── ML / AI (modern stack) ─────────────────────────────────────────────────
+LLM
+RAG
+GraphRAG
+Retrieval-augmented generation
+Vector database
+Pinecone
+Weaviate
+Embedding
+Transformer
+NLP
+NER
+Named entity recognition
+Knowledge graph
+Hugging Face
+LangChain
+LlamaIndex
+MLOps
+MLflow
+Weights and Biases
+
+# ─── Bio / regulatory / quality ─────────────────────────────────────────────
+Veeva
+Multi-omics
+Transcriptomics
+Proteomics
+Metabolomics
+Bioinformatics
+Computational biology
+Variant calling
+Long-read sequencing
+NGS
+Real-world evidence
+RWE
+Claims substantiation
+GxP
+GMP
+GLP
+GCP (good clinical practice)
+HIPAA
+FDA submission
+510(k)
+
+# ─── Process / methodology ──────────────────────────────────────────────────
+Six Sigma
+Lean Six Sigma
+Yellow Belt
+Green Belt
+Kaizen
+Agile
+Scrum
+Kanban
+Project Management
+Program Management
+Stakeholder management
+Change management
+Process improvement
+Root cause analysis
+
+# ─── Roles / titles (commonly used in postings) ─────────────────────────────
+Solutions architect
+Forward deployed engineer
+Technical product manager
+Data engineer
+Data scientist
+Research scientist
+Senior scientist
+Computational scientist
+Knowledge engineer
+ML engineer
+
+# ─── Misc commonly missing ──────────────────────────────────────────────────
+GraphQL
+REST API
+gRPC
+CI/CD
+GitHub Actions
+Jenkins
+Linux
+Bash
+Shell scripting

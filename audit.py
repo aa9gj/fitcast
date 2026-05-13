@@ -32,6 +32,7 @@ from pipeline import (
     derive_qualification_score,
     get_embedding_model,
 )
+from skill_extractor import get_extractor
 
 ROOT = Path(__file__).parent
 RESUME_PATH = ROOT / "resume.md"
@@ -128,7 +129,13 @@ def main() -> None:
 
     # Derive the same scores the pipeline does.
     score, verdict, score_components = derive_qualification_score(qm)
-    ats_score, ats_components = derive_ats_score(ats)
+
+    # Hybrid ATS: O*NET ontology + Claude LLM extraction (union).
+    extractor = get_extractor()
+    resume_skills = extractor.extract(resume)
+    ats_score, ats_components, ats_matched, ats_missing = derive_ats_score(
+        resume_skills, posting_text, ats
+    )
 
     # Domain fit if available.
     domain_fit = None
@@ -159,9 +166,15 @@ def main() -> None:
     print(f"  Adjustments total:       {sc['adjustments_total']:+d}")
     print(f"  Final score:             {score} → {verdict}")
 
-    print(_bar("ATS score derivation"))
+    print(_bar("ATS score derivation (hybrid: O*NET + Claude extraction)"))
     ac = ats_components
-    print(f"  Keywords matched:        {ac['keywords_matched']} of {ac['keywords_total']}  "
+    print(f"  Methodology:             {ac.get('methodology', '?')}")
+    print(f"  From O*NET ontology:     {ac.get('onet_matched', 0)} matched, "
+          f"{ac.get('onet_missing', 0)} missing")
+    print(f"  From LLM extraction:     {ac.get('llm_matched', 0)} matched, "
+          f"{ac.get('llm_missing', 0)} missing")
+    print(f"  After dedup (union):     {ac.get('skills_matched', 0)} matched of "
+          f"{ac.get('skills_total', 0)} total skills "
           f"(ratio {ac.get('match_ratio', '?')})")
     if ac.get("format_warnings_penalty"):
         print(f"  Format-warning penalty:  {ac['format_warnings_penalty']:+d}")
@@ -176,19 +189,23 @@ def main() -> None:
         print(f"  {mark} [{conf}] {r.requirement}")
         print(f"        evidence: {r.evidence}\n")
 
-    print(_bar("ATS keyword analysis"))
-    if ats.keyword_matches:
-        print("  Matches (in resume):")
-        for kw in ats.keyword_matches:
+    print(_bar("ATS skill analysis (hybrid — union of ontology + LLM extraction)"))
+    if ats_matched:
+        print(f"  Skills matched (in both posting AND your resume): {len(ats_matched)}")
+        for kw in ats_matched:
             print(f"    ✓ {kw}")
-    if ats.keyword_gaps:
-        print("\n  Gaps (NOT in resume — consider adding when you genuinely have the experience):")
-        for kw in ats.keyword_gaps:
+    if ats_missing:
+        print(f"\n  Skills missing (in posting, NOT in your resume): {len(ats_missing)}")
+        print(f"  (Add these to your resume only when you genuinely have the experience.)")
+        for kw in ats_missing:
             print(f"    ✗ {kw}")
+    if not ats_matched and not ats_missing:
+        print("  (No skills identified.)")
     if ats.format_warnings:
-        print("\n  Format warnings:")
+        print(f"\n  Format warnings (from Claude's reading of resume.md):")
         for w in ats.format_warnings:
             print(f"    ! {w}")
+    print(f"\n  For real PDF/DOCX format checks, run: python check_resume_format.py")
 
     print(_bar("Requirements section (verbatim from posting)"))
     if analysis.requirements_section.found:
