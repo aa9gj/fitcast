@@ -10,6 +10,14 @@ companies.bootstrap.yaml
 # Per-job tailored resumes (personal data)
 tailored/
 
+# Personal PDF/DOCX resumes (used by check_resume_format.py)
+resume.pdf
+resume.docx
+resume.extracted.*.txt
+
+# O*NET database cache (large, regenerable by bootstrap_ontologies.py)
+data/.onet_db.zip
+
 # Python
 __pycache__/
 *.pyc

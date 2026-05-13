@@ -32,6 +32,7 @@ from pipeline import (
     derive_qualification_score,
     get_embedding_model,
 )
+from skill_extractor import get_extractor
 
 ROOT = Path(__file__).parent
 RESUME_PATH = ROOT / "resume.md"
@@ -124,11 +125,14 @@ def main() -> None:
 
     analysis = JobAnalysis.model_validate_json(out)
     qm = analysis.qualification_match
-    ats = analysis.ats_assessment
 
     # Derive the same scores the pipeline does.
     score, verdict, score_components = derive_qualification_score(qm)
-    ats_score, ats_components = derive_ats_score(ats)
+
+    # ATS via O*NET skill extraction.
+    extractor = get_extractor()
+    resume_skills = extractor.extract(resume)
+    ats_score, ats_components, ats_matched, ats_missing = derive_ats_score(resume_skills, posting_text)
 
     # Domain fit if available.
     domain_fit = None
@@ -159,12 +163,12 @@ def main() -> None:
     print(f"  Adjustments total:       {sc['adjustments_total']:+d}")
     print(f"  Final score:             {score} → {verdict}")
 
-    print(_bar("ATS score derivation"))
+    print(_bar("ATS score derivation (skill-ontology overlap)"))
     ac = ats_components
-    print(f"  Keywords matched:        {ac['keywords_matched']} of {ac['keywords_total']}  "
+    print(f"  Ontology:                {ac.get('ontology', 'O*NET 28.3 + supplement')}")
+    print(f"  Skills in posting:       {ac['skills_in_posting']}")
+    print(f"  Skills matched in resume:{ac['skills_matched']}  "
           f"(ratio {ac.get('match_ratio', '?')})")
-    if ac.get("format_warnings_penalty"):
-        print(f"  Format-warning penalty:  {ac['format_warnings_penalty']:+d}")
     print(f"  Final ATS score:         {ats_score}")
 
     print(_bar("Per-requirement evidence"))
@@ -176,19 +180,20 @@ def main() -> None:
         print(f"  {mark} [{conf}] {r.requirement}")
         print(f"        evidence: {r.evidence}\n")
 
-    print(_bar("ATS keyword analysis"))
-    if ats.keyword_matches:
-        print("  Matches (in resume):")
-        for kw in ats.keyword_matches:
+    print(_bar("ATS skill analysis (O*NET ontology — fully reproducible)"))
+    if ats_matched:
+        print(f"  Skills matched (in both posting AND your resume): {len(ats_matched)}")
+        for kw in sorted(ats_matched):
             print(f"    ✓ {kw}")
-    if ats.keyword_gaps:
-        print("\n  Gaps (NOT in resume — consider adding when you genuinely have the experience):")
-        for kw in ats.keyword_gaps:
+    if ats_missing:
+        print(f"\n  Skills missing (in posting, NOT in your resume): {len(ats_missing)}")
+        print(f"  (Add these to your resume only when you genuinely have the experience.)")
+        for kw in sorted(ats_missing):
             print(f"    ✗ {kw}")
-    if ats.format_warnings:
-        print("\n  Format warnings:")
-        for w in ats.format_warnings:
-            print(f"    ! {w}")
+    if not ats_matched and not ats_missing:
+        print("  (No skills from the O*NET ontology found in the posting.)")
+    print(f"\n  For format issues (table parsing, layout problems), run: "
+          f"python check_resume_format.py")
 
     print(_bar("Requirements section (verbatim from posting)"))
     if analysis.requirements_section.found:

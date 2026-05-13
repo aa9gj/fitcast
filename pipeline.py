@@ -30,6 +30,8 @@ import requests
 import yaml
 from pydantic import BaseModel, Field, ValidationError
 
+from skill_extractor import get_extractor
+
 ROOT = Path(__file__).parent
 CONFIG_PATH = ROOT / "config.yaml"
 RESUME_PATH = ROOT / "resume.md"
@@ -97,18 +99,9 @@ class QualificationMatch(BaseModel):
     rationale: str
 
 
-class ATSAssessment(BaseModel):
-    """Same idea — keyword extraction only. ats_score is derived in Python
-    as |matches| / (|matches| + |gaps|) * 100."""
-    keyword_matches: list[str]
-    keyword_gaps: list[str]
-    format_warnings: list[str]
-
-
 class JobAnalysis(BaseModel):
     requirements_section: RequirementsSection
     qualification_match: QualificationMatch
-    ats_assessment: ATSAssessment
 
 
 ANALYSIS_SCHEMA: dict = {
@@ -171,18 +164,8 @@ ANALYSIS_SCHEMA: dict = {
             "required": ["requirements", "breakdown", "rationale"],
             "additionalProperties": False,
         },
-        "ats_assessment": {
-            "type": "object",
-            "properties": {
-                "keyword_matches": {"type": "array", "items": {"type": "string"}},
-                "keyword_gaps": {"type": "array", "items": {"type": "string"}},
-                "format_warnings": {"type": "array", "items": {"type": "string"}},
-            },
-            "required": ["keyword_matches", "keyword_gaps", "format_warnings"],
-            "additionalProperties": False,
-        },
     },
-    "required": ["requirements_section", "qualification_match", "ats_assessment"],
+    "required": ["requirements_section", "qualification_match"],
     "additionalProperties": False,
 }
 
@@ -232,7 +215,7 @@ def derive_qualification_score(qm: QualificationMatch) -> tuple[int, str, dict]:
 
     adjustments = degree_penalty + years_penalty
     score = max(0, min(100, round(base + adjustments)))
-    verdict = "qualified" if score >= 90 else "stretch" if score >= 60 else "not_qualified"
+    verdict = "qualified" if score >= 80 else "stretch" if score >= 50 else "not_qualified"
 
     return score, verdict, {
         "requirements_met": met,
@@ -245,36 +228,38 @@ def derive_qualification_score(qm: QualificationMatch) -> tuple[int, str, dict]:
     }
 
 
-def derive_ats_score(ats: ATSAssessment) -> tuple[int, dict]:
-    """ATS score is the keyword-overlap percentage from the extraction,
-    minus -5 per format warning. Deterministic.
+def derive_ats_score(resume_skills: set[str], posting_text: str) -> tuple[int, dict, set[str], set[str]]:
+    """ATS score from O*NET skill-overlap percentage. Deterministic.
 
-    Returns (score, components_dict).
+    `resume_skills` is the pre-computed set of skills extracted from the
+    resume (extract once at start of run, reuse for all jobs).
+
+    Returns (score, components_dict, matched_skills, missing_skills).
     """
-    matches = len(ats.keyword_matches)
-    gaps = len(ats.keyword_gaps)
-    total = matches + gaps
-    warnings = len(ats.format_warnings)
+    extractor = get_extractor()
+    posting_skills = extractor.extract(posting_text)
 
-    if total == 0:
+    if not posting_skills:
+        # Posting had no recognizable skills — neutral score.
         return 50, {
-            "keywords_matched": 0,
-            "keywords_total": 0,
+            "skills_matched": 0,
+            "skills_in_posting": 0,
             "match_ratio": None,
-            "format_warnings_penalty": -5 * warnings,
-        }
+            "ontology": "O*NET 28.3 + supplement",
+        }, set(), set()
 
-    match_ratio = matches / total
-    raw = match_ratio * 100
-    warning_penalty = -5 * warnings
-    score = max(0, min(100, round(raw + warning_penalty)))
+    matched = resume_skills & posting_skills
+    missing = posting_skills - resume_skills
+
+    match_ratio = len(matched) / len(posting_skills)
+    score = max(0, min(100, round(match_ratio * 100)))
 
     return score, {
-        "keywords_matched": matches,
-        "keywords_total": total,
+        "skills_matched": len(matched),
+        "skills_in_posting": len(posting_skills),
         "match_ratio": round(match_ratio, 2),
-        "format_warnings_penalty": warning_penalty,
-    }
+        "ontology": "O*NET 28.3 + supplement",
+    }, matched, missing
 
 
 # ───────────── Domain-fit via embedding similarity (optional dep) ───────────
@@ -649,7 +634,7 @@ def scrape_jobs(config: dict, client: anthropic.Anthropic, resume: str) -> list[
 
 # ──────────────────────────── Claude analysis ───────────────────────────────
 
-SYSTEM_INSTRUCTIONS = """You are a careful job-application analyst. For each job posting, EXTRACT the following — your job is extraction and judgment per requirement, not picking aggregate scores. The pipeline computes scores from your extraction.
+SYSTEM_INSTRUCTIONS = """You are a careful job-application analyst. For each job posting, EXTRACT the following — your job is per-requirement extraction and judgment, not picking aggregate scores. The pipeline computes the qualification score from your extraction; ATS score is computed independently via skill-ontology matching.
 
 1. Find the section that lists minimum requirements / qualifications. Common headings: "Requirements", "Minimum Qualifications", "Basic Qualifications", "What You Bring", "Qualifications", "Required Experience". Quote it verbatim in `requirements_section.text`. If no clear section exists, set `found: false`.
 
@@ -666,14 +651,9 @@ SYSTEM_INSTRUCTIONS = """You are a careful job-application analyst. For each job
    - `degree_resume`: highest relevant degree on the resume.
    - `degree_match`: "meets_or_exceeds" if resume degree >= required (or if no degree was required), "below" if resume degree is lower, "unspecified" if posting didn't specify.
 
-4. Extract ATS keyword data:
-   - `keyword_matches`: important keywords/phrases from the posting that DO appear in the resume (focus on hard skills, tools, technologies, certifications — not generic words like "team" or "develop")
-   - `keyword_gaps`: important keywords from the posting that are MISSING from the resume
-   - `format_warnings`: resume format issues that might trip up an ATS parser (tables, complex layouts, unusual section headings) — empty list if none
+4. Provide a 2-3 sentence `rationale` summarizing the overall fit honestly.
 
-5. Provide a 2-3 sentence `rationale` summarizing the overall fit honestly.
-
-Be terse. Ground every claim in what's actually in the resume. The Python pipeline derives the qualification and ATS scores from this extraction — do NOT pick scores yourself."""
+Be terse. Ground every claim in what's actually in the resume. The Python pipeline derives the qualification score from this extraction — do NOT pick scores yourself."""
 
 
 def analyze_job(client: anthropic.Anthropic, resume: str, job: dict) -> tuple[JobAnalysis | None, str]:
@@ -799,6 +779,12 @@ def main() -> None:
               "install with `pip install sentence-transformers` to enable)",
               file=sys.stderr)
 
+    # Pre-extract skills from the resume once (used for every job's ATS score).
+    extractor = get_extractor()
+    resume_skills = extractor.extract(resume)
+    print(f"Resume skills (O*NET-matched): {len(resume_skills)} found "
+          f"[{extractor.info()}]", file=sys.stderr)
+
     results: list[dict] = []
 
     for i, job in enumerate(jobs, 1):
@@ -815,9 +801,8 @@ def main() -> None:
 
         # Derive scores deterministically from the extraction.
         qm = analysis.qualification_match
-        ats = analysis.ats_assessment
         score, verdict, score_components = derive_qualification_score(qm)
-        ats_score, ats_components = derive_ats_score(ats)
+        ats_score, ats_components, ats_matched, ats_missing = derive_ats_score(resume_skills, posting_text)
         domain_fit = compute_domain_fit(resume_embedding, posting_text) if resume_embedding is not None else None
 
         posted_at = job.get("posted_at")
@@ -836,9 +821,9 @@ def main() -> None:
             "matched": [r.requirement for r in qm.requirements if r.met],
             "missing": [r.requirement for r in qm.requirements if not r.met],
             "rationale": qm.rationale,
-            "ats_keyword_matches": ats.keyword_matches,
-            "ats_keyword_gaps": ats.keyword_gaps,
-            "ats_format_warnings": ats.format_warnings,
+            # ATS skills from O*NET ontology (deterministic, reproducible).
+            "ats_skills_matched": sorted(ats_matched),
+            "ats_skills_missing": sorted(ats_missing),
             "requirements_found": analysis.requirements_section.found,
             "requirements_heading": analysis.requirements_section.section_heading,
             "requirements_text": analysis.requirements_section.text,
@@ -855,7 +840,8 @@ def main() -> None:
         df_str = f", domain {domain_fit}/100" if domain_fit is not None else ""
         print(
             f"    -> {verdict} ({score}/100), ATS {ats_score}/100{df_str}  "
-            f"[{score_components.get('requirements_met', 0)}/{score_components.get('requirements_total', 0)} reqs met]",
+            f"[{score_components.get('requirements_met', 0)}/{score_components.get('requirements_total', 0)} reqs met, "
+            f"{ats_components.get('skills_matched', 0)}/{ats_components.get('skills_in_posting', 0)} skills]",
             file=sys.stderr,
         )
 
@@ -869,8 +855,9 @@ def main() -> None:
             "title", "company", "location", "source", "url", "posted_at",
             "prerank_score",
             "requirements_met", "requirements_total",
-            "missing", "matched", "ats_keyword_gaps", "ats_keyword_matches",
-            "rationale", "ats_format_warnings",
+            "missing", "matched",
+            "ats_skills_missing", "ats_skills_matched",
+            "rationale",
             "requirements_heading", "requirements_text",
         ])
         writer.writeheader()
@@ -892,10 +879,9 @@ def main() -> None:
                 "requirements_total": sc.get("requirements_total", ""),
                 "missing": "; ".join(r["missing"]),
                 "matched": "; ".join(r["matched"]),
-                "ats_keyword_gaps": "; ".join(r["ats_keyword_gaps"]),
-                "ats_keyword_matches": "; ".join(r["ats_keyword_matches"]),
+                "ats_skills_missing": "; ".join(r["ats_skills_missing"]),
+                "ats_skills_matched": "; ".join(r["ats_skills_matched"]),
                 "rationale": r["rationale"],
-                "ats_format_warnings": "; ".join(r["ats_format_warnings"]),
                 "requirements_heading": r["requirements_heading"] or "",
                 "requirements_text": (r["requirements_text"] or "")[:800],
             })

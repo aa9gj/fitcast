@@ -3,6 +3,12 @@ pydantic>=2.0
 requests>=2.28
 pyyaml>=6.0
 
+# Used by check_resume_format.py to extract text from your real PDF/DOCX
+# resume the way an ATS would (deliberately simple parsing — no fancy
+# layout reconstruction).
+PyPDF2>=3.0
+python-docx>=1.0
+
 # Optional: enables the domain_fit_score (resume × posting embedding cosine
 # similarity). Adds ~500MB of deps (PyTorch + transformers). Comment out to
 # skip — pipeline runs fine without it; domain_fit_score will just be empty.
