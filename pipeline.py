@@ -1082,7 +1082,7 @@ def main() -> None:
         print(
             f"    -> {verdict} ({score}/100), ATS {ats_score}/100{df_str}  "
             f"[{score_components.get('requirements_met', 0)}/{score_components.get('requirements_total', 0)} reqs met, "
-            f"{ats_components.get('skills_matched', 0)}/{ats_components.get('skills_in_posting', 0)} skills]",
+            f"{ats_components.get('skills_matched', 0)}/{ats_components.get('skills_total', 0)} skills]",
             file=sys.stderr,
         )
 
