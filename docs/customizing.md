@@ -5,8 +5,14 @@ Everything's in `config.yaml`. Edit, re-run.
 ## Filter to fresh jobs only
 
 ```yaml
-posted_within_hours: 48   # only show jobs from the last 48 hours
+posted_within_hours: 48     # legacy integer form — hours
+posted_within_hours: "7d"   # also accepts shorthand strings
+posted_within_hours: "24h"
+posted_within_hours: "1w"
+posted_within_hours: "1d12h"  # composite forms work too
 ```
+
+Accepts an integer (hours) or a shorthand string: `Xh` / `Xd` / `Xw` for hours / days / weeks. Composite forms like `1d12h` or `2w3d` sum the parts. Case-insensitive on the unit.
 
 Comment out (or remove) the line to disable.
 
@@ -32,6 +38,90 @@ python extract_keywords.py
 ```
 
 Outputs a YAML block with profile summary, target roles, and recommended keywords aligned to your background. Copy the `keywords:` portion into config.yaml.
+
+## Filter by location
+
+Three rule lists, all case-insensitive. Mix them however you like:
+
+```yaml
+location_filter:
+  cities:            # word-boundary match — safe for short tokens
+    - Boston
+    - New York
+    - San Francisco
+    - Seattle
+  include:           # substring match — good for "remote", country names
+    - remote
+    - hybrid
+    - united states
+    - usa
+  exclude:           # any match drops the job (wins over cities + include)
+    - india
+    - philippines
+```
+
+**Rules:**
+
+- **`exclude` wins**: if any exclude term substring-matches the location, drop. Always.
+- **`cities`** uses **word-boundary matching** (`\b` regex anchors). `"MA"` matches `"Boston, MA"` but NOT `"Manila, Philippines"`. `"SF"` matches `"SF, CA"` but NOT `"Salford, UK"`. Use this for short ambiguous tokens.
+- **`include`** uses **substring matching**. Better for longer / unambiguous terms (`remote`, `hybrid`, `united states`).
+- A job passes if **either** a `cities` entry **OR** an `include` entry matches.
+- All three lists empty / block commented out = no location filtering.
+
+**Caveats** — location strings vary by source:
+
+| Source | Example locations |
+|---|---|
+| Greenhouse | `"San Francisco, CA"`, `"Remote — US"`, `"Multiple Locations"` |
+| Lever | `"Paris"`, `"Remote – Americas"` |
+| Ashby | `"Remote"`, `"New York, NY"` |
+| The Muse | `"Flexible / Remote"` |
+
+Common gotchas:
+- Country code `"us"` as a substring matches `"Austin"`, `"Houston"`, `"Boston"`. Use `"USA"` or `"United States"` instead — or put `"US"` in `cities` for the word-boundary version.
+- `"remote"` is universally safe — every source uses it.
+
+## Filter by salary
+
+```yaml
+salary_filter:
+  min: 100000   # USD per year — drop if posting's max stated salary < this
+  max: 250000   # USD per year — drop if posting's min stated salary > this
+```
+
+Both bounds optional — set either or both.
+
+How it works:
+- Regex-scans the posting title + body for dollar amounts (e.g. `$120,000`, `$150k`, `$90K - $130K`)
+- If any are found, compares the posting's salary range (min..max of all values found) against your filter range
+- Drops only if the posting's range is **entirely outside** yours (no overlap). Postings whose range overlaps yours pass — they might still hit your target.
+- If no salary mentioned anywhere → **pass through** (don't penalize companies that don't disclose)
+
+**Examples:**
+
+| Posting says | Filter `min: 100000, max: 200000` | Result |
+|---|---|---|
+| `$120k - $180k` | overlap | ✓ pass |
+| `$80k - $300k` | overlap (spans yours) | ✓ pass |
+| `$50k - $80k` | entirely below min | ✗ drop |
+| `$220k - $260k` | entirely above max | ✗ drop |
+| (nothing mentioned) | n/a | ✓ pass |
+
+**Numerical salary in results:** every job that survives gets `salary_min_extracted` and `salary_max_extracted` columns populated (when salary was mentioned) — so you can sort `results.csv` by salary, plot it, or use it as a tiebreaker between similarly-scored matches. Empty cells = the posting didn't mention salary. Values are plain integers in USD.
+
+**Caveats:**
+- USD-only. Postings in other currencies won't have their numbers matched.
+- The regex is conservative: it only matches `$X,XXX[,XXX]` and `$XXk` patterns, filtered to the $30K–$2M range. Numbers outside that range (hourly rates, valuation figures, equity totals) are skipped.
+- Salaries embedded in tables that markdown can't preserve will be invisible. Run `python check_resume_format.py` on a sample posting if you suspect extraction issues.
+- Not every posting has salary at all. Most Greenhouse/Lever/Ashby boards don't include it. The Muse sometimes does. **Default behavior of "pass through if missing" is conservative** — you'll still see jobs that don't disclose. Set the filter only if you'd rather skip those entirely (delete the `salary_filter` block and the script keeps everything).
+
+To test what your filter catches, run with `--dry-run`:
+
+```bash
+python pipeline.py --dry-run
+```
+
+The stderr will report `salary filter (>= $100,000 or unstated): 542 -> 287`. If the drop is unexpectedly large, your minimum may be too aggressive.
 
 ## Pre-rank a larger pool with cheap Haiku
 

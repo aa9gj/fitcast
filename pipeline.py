@@ -413,6 +413,51 @@ def html_to_text(html: str) -> str:
 
 # ─────────────────────────── Timestamp helper ───────────────────────────────
 
+_TIME_WINDOW_UNIT_RE = re.compile(r"(\d+)\s*([hdw])", re.IGNORECASE)
+
+
+def parse_time_window(value) -> int | None:
+    """Parse a config value to hours.
+
+    Accepts:
+      - integer or numeric string → hours (legacy behavior)
+      - "24h" / "48h" → hours
+      - "1d" / "7d" → days × 24
+      - "2w" / "1w" → weeks × 168
+      - "1d12h", "2w3d" → sum of components
+
+    Returns None for None / "" / unparseable input.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        n = int(value)
+        return n if n > 0 else None
+    s = str(value).strip().lower()
+    if not s:
+        return None
+    # Plain integer string
+    try:
+        n = int(s)
+        return n if n > 0 else None
+    except ValueError:
+        pass
+    # Composite "1d12h" / "2w" / "48h"
+    total_hours = 0
+    matched_any = False
+    for m in _TIME_WINDOW_UNIT_RE.finditer(s):
+        matched_any = True
+        n = int(m.group(1))
+        unit = m.group(2)
+        if unit == "h":
+            total_hours += n
+        elif unit == "d":
+            total_hours += n * 24
+        elif unit == "w":
+            total_hours += n * 24 * 7
+    return total_hours if matched_any and total_hours > 0 else None
+
+
 def _parse_iso(ts: str | None) -> datetime | None:
     if not ts:
         return None
@@ -725,6 +770,120 @@ def matches_keywords(job: dict, keywords: list[str]) -> bool:
     return any(kw.lower() in haystack for kw in keywords)
 
 
+def matches_location(job: dict, location_filter: dict | None) -> bool:
+    """Apply location include / exclude / cities rules.
+
+    - `exclude`: substring match (case-insensitive). Any match drops the job.
+    - `cities`: word-boundary match (case-insensitive). Avoids "MA" matching
+      "Manila" by requiring \\b boundaries. Any match passes.
+    - `include`: substring match (case-insensitive). Any match passes.
+    - exclude wins; cities OR include passes; empty filter = pass everything.
+    """
+    if not location_filter:
+        return True
+    location = (job.get("location") or "").lower()
+
+    excludes = [s.lower() for s in (location_filter.get("exclude") or [])]
+    if location and any(ex in location for ex in excludes):
+        return False
+
+    cities = [s.lower() for s in (location_filter.get("cities") or [])]
+    includes = [s.lower() for s in (location_filter.get("include") or [])]
+
+    # No inclusion criteria → pass through (only exclude was checked above).
+    if not cities and not includes:
+        return True
+
+    # Cities: word-boundary match (avoids "MA" in "Manila", "SF" in "Salford").
+    for city in cities:
+        if re.search(r"\b" + re.escape(city) + r"\b", location):
+            return True
+
+    # Includes: substring match (catches "remote", "hybrid", country names).
+    for inc in includes:
+        if inc in location:
+            return True
+
+    return False
+
+
+# Salary patterns we recognize in posting text. Tries to be conservative —
+# better to miss some than to misfire on, say, equity numbers or revenue
+# stats mentioned in company descriptions.
+_SALARY_FULL_RE = re.compile(
+    r'\$\s?(\d{1,3}(?:,\d{3})+)(?!\.\d)',  # e.g., $120,000 or $1,250,000
+)
+_SALARY_K_RE = re.compile(
+    r'\$\s?(\d{2,3}(?:\.\d+)?)\s?[Kk](?![a-zA-Z])',  # e.g., $120k or $120K
+)
+
+
+def extract_salaries(text: str) -> list[int]:
+    """Extract plausible USD annual salary figures from text.
+
+    Looks for:
+      - $X,XXX[,XXX] patterns (always)
+      - $XXk patterns (e.g., $120k → 120000)
+
+    Filters out values outside [$30K, $2M] — anything else is unlikely
+    to be an annual base salary (probably hourly rates, totals, etc.).
+    """
+    out: list[int] = []
+    for m in _SALARY_FULL_RE.finditer(text):
+        try:
+            n = int(m.group(1).replace(",", ""))
+        except (ValueError, TypeError):
+            continue
+        if 30_000 <= n <= 2_000_000:
+            out.append(n)
+    for m in _SALARY_K_RE.finditer(text):
+        try:
+            n = int(float(m.group(1)) * 1000)
+        except (ValueError, TypeError):
+            continue
+        if 30_000 <= n <= 2_000_000:
+            out.append(n)
+    return out
+
+
+def matches_salary(job: dict, salary_filter: dict | None) -> bool:
+    """Check if the job's salary range overlaps the configured user range.
+
+    Filter config accepts independent `min` and `max` (either or both):
+        salary_filter:
+          min: 100000   # USD/year — drop if posting's max < this
+          max: 250000   # USD/year — drop if posting's min > this
+
+    Semantics: drop the job ONLY if its salary range is ENTIRELY outside the
+    user's range. Postings that overlap pass — they might still hit the
+    user's target. Postings with no salary mentioned PASS THROUGH (we don't
+    penalize non-disclosing companies).
+    """
+    if not salary_filter:
+        return True
+
+    user_min = salary_filter.get("min")
+    user_max = salary_filter.get("max")
+    if user_min in (None, 0) and user_max in (None, 0):
+        return True
+
+    text = (job.get("title", "") + " " + job.get("content_html", ""))
+    salaries = extract_salaries(text)
+    if not salaries:
+        return True  # not mentioned → pass through
+
+    posting_min = min(salaries)
+    posting_max = max(salaries)
+
+    # Drop if posting is entirely below user_min.
+    if user_min not in (None, 0) and posting_max < int(user_min):
+        return False
+    # Drop if posting is entirely above user_max.
+    if user_max not in (None, 0) and posting_min > int(user_max):
+        return False
+    return True
+
+
 def _parallel_fetch(label: str, slugs: list[str], fetch_fn) -> list[dict]:
     """Run fetch_fn(slug) in parallel for all slugs. Returns flattened job list."""
     if not slugs:
@@ -779,12 +938,41 @@ def scrape_jobs(config: dict, client: anthropic.Anthropic, resume: str,
 
     filtered = [j for j in all_jobs if matches_keywords(j, keywords)]
 
-    if posted_within_hours is not None:
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=int(posted_within_hours))
+    posted_hours = parse_time_window(posted_within_hours)
+    if posted_hours is not None:
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=posted_hours)
         before = len(filtered)
         filtered = [j for j in filtered if j.get("posted_at") and j["posted_at"] >= cutoff]
+        # Display label: human-readable form of the configured value.
+        label = f"{posted_within_hours}" if posted_within_hours else f"{posted_hours}h"
         print(
-            f"  date filter (last {posted_within_hours}h): {before} -> {len(filtered)}",
+            f"  date filter (last {label}): {before} -> {len(filtered)}",
+            file=sys.stderr,
+        )
+
+    location_filter = config.get("location_filter")
+    if location_filter:
+        before = len(filtered)
+        filtered = [j for j in filtered if matches_location(j, location_filter)]
+        print(
+            f"  location filter: {before} -> {len(filtered)}",
+            file=sys.stderr,
+        )
+
+    salary_filter = config.get("salary_filter")
+    if salary_filter and (salary_filter.get("min") or salary_filter.get("max")):
+        before = len(filtered)
+        filtered = [j for j in filtered if matches_salary(j, salary_filter)]
+        # Build a human-readable label of what's being filtered.
+        smin, smax = salary_filter.get("min"), salary_filter.get("max")
+        if smin and smax:
+            label = f"${int(smin):,}–${int(smax):,}"
+        elif smin:
+            label = f">= ${int(smin):,}"
+        else:
+            label = f"<= ${int(smax):,}"
+        print(
+            f"  salary filter ({label} or unstated): {before} -> {len(filtered)}",
             file=sys.stderr,
         )
 
@@ -1045,6 +1233,15 @@ def main() -> None:
         domain_fit = compute_domain_fit(resume_embedding, posting_text) if resume_embedding is not None else None
 
         posted_at = job.get("posted_at")
+
+        # Pull any USD salary amounts mentioned in the posting (min + max
+        # across all matches). None if the posting doesn't mention salary.
+        salaries_found = extract_salaries(
+            (job.get("title", "") or "") + " " + (job.get("content_html", "") or "")
+        )
+        salary_min_extracted = min(salaries_found) if salaries_found else None
+        salary_max_extracted = max(salaries_found) if salaries_found else None
+
         result = {
             "score": score,
             "verdict": verdict,
@@ -1056,6 +1253,8 @@ def main() -> None:
             "source": job.get("source", ""),
             "url": job["url"],
             "posted_at": posted_at.isoformat() if posted_at else "",
+            "salary_min_extracted": salary_min_extracted,
+            "salary_max_extracted": salary_max_extracted,
             "prerank_score": prerank,
             "matched": [r.requirement for r in qm.requirements if r.met],
             "missing": [r.requirement for r in qm.requirements if not r.met],
@@ -1094,6 +1293,7 @@ def main() -> None:
         writer = csv.DictWriter(f, fieldnames=[
             "score", "verdict", "ats_score", "domain_fit_score",
             "title", "company", "location", "source", "url", "posted_at",
+            "salary_min_extracted", "salary_max_extracted",
             "prerank_score",
             "requirements_met", "requirements_total",
             "missing", "matched",
@@ -1115,6 +1315,8 @@ def main() -> None:
                 "source": r["source"],
                 "url": r["url"],
                 "posted_at": r["posted_at"],
+                "salary_min_extracted": r["salary_min_extracted"] if r["salary_min_extracted"] is not None else "",
+                "salary_max_extracted": r["salary_max_extracted"] if r["salary_max_extracted"] is not None else "",
                 "prerank_score": r["prerank_score"] if r["prerank_score"] is not None else "",
                 "requirements_met": sc.get("requirements_met", ""),
                 "requirements_total": sc.get("requirements_total", ""),
