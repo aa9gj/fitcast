@@ -76,9 +76,12 @@ keywords:
 # How many jobs to deep-analyze per run with the main model. Cost lever.
 max_jobs: 10
 
-# Optional: only include jobs posted/updated within the last N hours.
-# Comment out (or remove) to disable the date filter.
-# posted_within_hours: 48
+# Optional: only include jobs posted/updated within the given time window.
+# Accepts an integer (hours) or a shorthand string: "24h", "1d", "7d", "2w",
+# "1d12h", etc. Comment out (or remove) to disable.
+# posted_within_hours: 7d
+# posted_within_hours: "24h"
+# posted_within_hours: 168
 
 # ─── Location filter (optional) ──────────────────────────────────────────
 # Substring matching on the job's location field (case-insensitive).
@@ -87,22 +90,33 @@ max_jobs: 10
 #   - `include` (if set): at least one match required
 #   - both empty / block commented out = no location filtering
 # location_filter:
+#   # Specific cities — uses WORD-BOUNDARY matching to avoid false positives
+#   # ("MA" wouldn't match inside "Manila"; "SF" wouldn't match "Salford").
+#   cities:
+#     - Boston
+#     - New York
+#     - San Francisco
+#     - Seattle
+#   # General terms — uses substring matching. Good for remote / countries.
 #   include:
 #     - remote
 #     - hybrid
 #     - united states
 #     - usa
-#     - us
+#   # Drops the job if any term matches the location. Wins over cities/include.
 #   exclude:
 #     - india
 #     - philippines
 
 # ─── Salary filter (optional) ────────────────────────────────────────────
-# Drops jobs whose max stated annual salary (extracted via regex from
-# posting text) falls below the threshold. Postings with no salary
-# mentioned PASS THROUGH (we don't penalize non-disclosing companies).
+# Filter by salary RANGE. Both bounds optional — set either or both.
+# Semantics: drop only if the posting's range is ENTIRELY outside yours.
+# A posting that overlaps your range passes (it might still hit your number).
+# Postings with no salary mentioned PASS THROUGH — we don't penalize
+# non-disclosing companies (most boards don't publish salary).
 # salary_filter:
-#   min_total_compensation: 100000  # USD per year
+#   min: 100000   # USD per year (drop if posting's max stated salary < this)
+#   max: 250000   # USD per year (drop if posting's min stated salary > this)
 
 # Optional cheap pre-rank pass with Haiku 4.5 (~$0.0007 per candidate).
 # When enabled, every candidate gets a quick relevance score and only the

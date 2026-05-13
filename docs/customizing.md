@@ -5,8 +5,14 @@ Everything's in `config.yaml`. Edit, re-run.
 ## Filter to fresh jobs only
 
 ```yaml
-posted_within_hours: 48   # only show jobs from the last 48 hours
+posted_within_hours: 48     # legacy integer form — hours
+posted_within_hours: "7d"   # also accepts shorthand strings
+posted_within_hours: "24h"
+posted_within_hours: "1w"
+posted_within_hours: "1d12h"  # composite forms work too
 ```
+
+Accepts an integer (hours) or a shorthand string: `Xh` / `Xd` / `Xw` for hours / days / weeks. Composite forms like `1d12h` or `2w3d` sum the parts. Case-insensitive on the unit.
 
 Comment out (or remove) the line to disable.
 
@@ -35,45 +41,73 @@ Outputs a YAML block with profile summary, target roles, and recommended keyword
 
 ## Filter by location
 
-Substring matching on the job's `location` field (case-insensitive). Two rule lists:
+Three rule lists, all case-insensitive. Mix them however you like:
 
 ```yaml
 location_filter:
-  include:           # OR — at least one must match
+  cities:            # word-boundary match — safe for short tokens
+    - Boston
+    - New York
+    - San Francisco
+    - Seattle
+  include:           # substring match — good for "remote", country names
     - remote
     - hybrid
     - united states
     - usa
-  exclude:           # AND — any match drops the job
+  exclude:           # any match drops the job (wins over cities + include)
     - india
     - philippines
 ```
 
 **Rules:**
-- `exclude` wins: if any exclude term matches, the job is dropped (even if it also matches an include)
-- `include` (if non-empty): at least one include term must match
-- Comment out the whole block (or leave both lists empty) to disable
 
-**Caveats** — location strings come from each source as free-form text:
-- Greenhouse: `"San Francisco, CA"`, `"Remote — US"`, `"Multiple Locations"`
-- Lever: `"Paris"`, `"Remote – Americas"`
-- Ashby: `"Remote"`, `"New York, NY"`
-- The Muse: `"Flexible / Remote"`
+- **`exclude` wins**: if any exclude term substring-matches the location, drop. Always.
+- **`cities`** uses **word-boundary matching** (`\b` regex anchors). `"MA"` matches `"Boston, MA"` but NOT `"Manila, Philippines"`. `"SF"` matches `"SF, CA"` but NOT `"Salford, UK"`. Use this for short ambiguous tokens.
+- **`include`** uses **substring matching**. Better for longer / unambiguous terms (`remote`, `hybrid`, `united states`).
+- A job passes if **either** a `cities` entry **OR** an `include` entry matches.
+- All three lists empty / block commented out = no location filtering.
 
-So your include/exclude terms should be substrings that actually appear in these strings. `remote`, `usa`, `united states`, specific city names work well. Country codes like `us` will also match `Austin` or `Houston` — be careful with very short substrings.
+**Caveats** — location strings vary by source:
+
+| Source | Example locations |
+|---|---|
+| Greenhouse | `"San Francisco, CA"`, `"Remote — US"`, `"Multiple Locations"` |
+| Lever | `"Paris"`, `"Remote – Americas"` |
+| Ashby | `"Remote"`, `"New York, NY"` |
+| The Muse | `"Flexible / Remote"` |
+
+Common gotchas:
+- Country code `"us"` as a substring matches `"Austin"`, `"Houston"`, `"Boston"`. Use `"USA"` or `"United States"` instead — or put `"US"` in `cities` for the word-boundary version.
+- `"remote"` is universally safe — every source uses it.
 
 ## Filter by salary
 
 ```yaml
 salary_filter:
-  min_total_compensation: 100000   # USD per year
+  min: 100000   # USD per year — drop if posting's max stated salary < this
+  max: 250000   # USD per year — drop if posting's min stated salary > this
 ```
+
+Both bounds optional — set either or both.
 
 How it works:
 - Regex-scans the posting title + body for dollar amounts (e.g. `$120,000`, `$150k`, `$90K - $130K`)
-- If any are found, uses the **max** value (typically the top of a range — generous interpretation)
-- If max < threshold → dropped
+- If any are found, compares the posting's salary range (min..max of all values found) against your filter range
+- Drops only if the posting's range is **entirely outside** yours (no overlap). Postings whose range overlaps yours pass — they might still hit your target.
 - If no salary mentioned anywhere → **pass through** (don't penalize companies that don't disclose)
+
+**Examples:**
+
+| Posting says | Filter `min: 100000, max: 200000` | Result |
+|---|---|---|
+| `$120k - $180k` | overlap | ✓ pass |
+| `$80k - $300k` | overlap (spans yours) | ✓ pass |
+| `$50k - $80k` | entirely below min | ✗ drop |
+| `$220k - $260k` | entirely above max | ✗ drop |
+| (nothing mentioned) | n/a | ✓ pass |
+
+**Numerical salary in results:** every job that survives gets `salary_min_extracted` and `salary_max_extracted` columns populated (when salary was mentioned) — so you can sort `results.csv` by salary, plot it, or use it as a tiebreaker between similarly-scored matches. Empty cells = the posting didn't mention salary. Values are plain integers in USD.
 
 **Caveats:**
 - USD-only. Postings in other currencies won't have their numbers matched.

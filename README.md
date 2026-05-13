@@ -74,4 +74,6 @@ pytest tests/
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+[**PolyForm Noncommercial License 1.0.0**](LICENSE) — you may use, modify, and share this software for any **noncommercial purpose** (personal use, research, education, nonprofit organizations, hobby projects). Commercial use is **not permitted** without separate arrangement with the author.
+
+This is a [source-available](https://en.wikipedia.org/wiki/Source-available_software) license, not an OSI-approved open-source license. The source is readable, forkable for noncommercial use, and you're welcome to contribute back — but you can't repackage and sell it.
