@@ -75,7 +75,7 @@ For context: LinkedIn Premium Career is $40/month; most "AI resume tailoring" Sa
 | Column | What's in it |
 |---|---|
 | `score` | 0–100 qualification fit — does the candidate actually meet the requirements? |
-| `verdict` | `qualified` (≥80) / `stretch` (60–79) / `not_qualified` (<60) |
+| `verdict` | `qualified` (≥80) / `stretch` (50–79) / `not_qualified` (<50) |
 | `ats_score` | 0–100 keyword alignment with the posting (separate from `score` — can diverge) |
 | `domain_fit_score` | 0–100 topical similarity (resume × posting embedding cosine). Empty if `sentence-transformers` isn't installed. |
 | `title`, `company`, `location` | Self-explanatory |
@@ -123,7 +123,7 @@ degree_penalty = -30 if resume degree is below the posting's requirement, else 0
 years_penalty  = -5 per year short on experience, capped at -30
 
 score = clamp(base_score + degree_penalty + years_penalty, 0, 100)
-verdict = "qualified" if score >= 80 else "stretch" if score >= 60 else "not_qualified"
+verdict = "qualified" if score >= 80 else "stretch" if score >= 50 else "not_qualified"
 ```
 
 Every input is in `results.json` under `score_components` and `breakdown`:
