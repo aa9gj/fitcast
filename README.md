@@ -77,16 +77,17 @@ For context: LinkedIn Premium Career is $40/month; most "AI resume tailoring" Sa
 | Column | What's in it |
 |---|---|
 | `score` | 0–100 qualification fit — does the candidate actually meet the requirements? |
-| `verdict` | `qualified` / `stretch` / `not_qualified` |
-| `ats_score` | 0–100 keyword alignment with the posting (separate from `score` — can diverge) |
+| `verdict` | `qualified` (≥80) / `stretch` (50–79) / `not_qualified` (<50) |
+| `ats_score` | 0–100 skill-overlap percentage between posting and resume (O*NET ontology — fully reproducible) |
+| `domain_fit_score` | 0–100 topical similarity (resume × posting embedding cosine). Empty if `sentence-transformers` isn't installed. |
 | `title`, `company`, `location` | Self-explanatory |
 | `url` | **Direct link to apply** — opens in your browser |
 | `posted_at` | When the job was posted/updated |
 | `prerank_score` | 0–10 cheap-pass relevance score (only when prerank is enabled) |
 | `missing` | Requirements you don't meet |
 | `matched` | Requirements you do meet |
-| `ats_keyword_gaps` | Keywords from the posting missing from your resume — ATS optimization targets |
-| `ats_keyword_matches` | Keywords from the posting that are already in your resume |
+| `ats_skills_missing` | Skills in the posting that don't appear in your resume — ATS optimization targets |
+| `ats_skills_matched` | Skills in both the posting AND your resume |
 | `rationale` | Claude's 2-3 sentence explanation |
 | `requirements_text` | Verbatim requirements section pulled from the posting |
 
@@ -99,7 +100,7 @@ Use [`audit.py`](#audit-a-jobs-score) to print all of this human-readably for an
 
 ## How scoring works
 
-Each job gets **four scores**. Three are *derived deterministically* from Claude's extraction — the math is auditable, not a black-box vibe number. The fourth uses local embeddings. Claude's role is extraction (find requirements, judge each one, list keywords); the pipeline does the arithmetic.
+Each job gets **four scores**. None of them are LLM-judged numbers. Three are *derived deterministically* from explicit inputs (per-requirement evidence; ontology-based skill overlap; embedding similarity). One is a cheap pre-filter from a small LLM. Claude's role is structured extraction; Python does the arithmetic.
 
 ### 1. Pre-rank score (0–10, Haiku 4.5 — LLM judgment)
 
@@ -111,7 +112,7 @@ A cheap one-shot relevance score generated *before* the expensive deep analysis.
 
 Only jobs scoring ≥ `prerank.threshold` (default 5) survive to deep analysis. Raise the threshold to 7+ if you're seeing too many irrelevant jobs in your `results.csv`.
 
-This is the one score still pure LLM judgment, because it runs on 100+ candidates and needs to be cheap.
+This is the only score that's still pure LLM judgment, because it runs on 100+ candidates and needs to be cheap.
 
 ### 2. Qualification score (0–100, derived from evidence)
 
@@ -124,34 +125,42 @@ degree_penalty = -30 if resume degree is below the posting's requirement, else 0
 years_penalty  = -5 per year short on experience, capped at -30
 
 score = clamp(base_score + degree_penalty + years_penalty, 0, 100)
-verdict = "qualified" if score >= 90 else "stretch" if score >= 60 else "not_qualified"
+verdict = "qualified" if score >= 80 else "stretch" if score >= 50 else "not_qualified"
 ```
 
 Every input is in `results.json` under `score_components` and `breakdown`:
 
 | Field | Example |
 |---|---|
-| `requirements_met` / `requirements_total` | 5 / 9 |
-| `met_ratio` | 0.56 |
-| `base_score` | 56 |
+| `requirements_met` / `requirements_total` | 6 / 9 |
+| `met_ratio` | 0.67 |
+| `base_score` | 67 |
 | `years_required` / `years_resume_estimated` | 5 / 3 |
 | `years_penalty` | -10 |
 | `degree_required` / `degree_resume` / `degree_match` | "PhD" / "PhD" / "meets_or_exceeds" |
 | `degree_penalty` | 0 |
-| Final `score` | 46 → `stretch` |
+| Final `score` | 57 → `stretch` |
 
-You can hand-check any score: "5/9 = 56 base, minus 10 for years, equals 46 → stretch." Run `python audit.py <url>` to print this breakdown for any job.
+You can hand-check any score: "6/9 = 67 base, minus 10 for years, equals 57 → stretch." Run `python audit.py <url>` to print this breakdown for any job.
 
-### 3. ATS score (0–100, derived from keyword extraction)
+### 3. ATS score (0–100, derived from O*NET skill overlap)
 
-Claude extracts which of the posting's important keywords DO and DON'T appear in your resume. The pipeline computes:
+**No LLM, fully reproducible.** Both the posting and the resume are scanned for skill mentions against an explicit ontology — currently [O*NET](https://www.onetonline.org/) (US Department of Labor's occupational skills database, public domain) plus a small curated supplement of modern tech terms it doesn't index (`data/skills_supplement.txt`). The score is plain set arithmetic:
 
 ```
-ats_score = (keywords_matched / (keywords_matched + keyword_gaps)) × 100
-            - 5 × format_warnings_count
+posting_skills = extract_skills(posting_text)   # e.g., {Python, AWS, Docker, Kubernetes, ...}
+resume_skills  = extract_skills(resume_text)    # e.g., {Python, R, SQL, Neo4j, ...}
+
+ats_score = |posting_skills ∩ resume_skills| / |posting_skills| × 100
 ```
 
-This is closer to what real ATS systems actually do (exact keyword matching with skill normalization) than asking an LLM to estimate vocabulary similarity. The math is in `results.json` under `ats_components`.
+Same posting + same resume = same score. Every time. No "Claude in a different mood" variation.
+
+**The skill catalog (`data/skills.json`) ships with the repo** — built from O*NET 28.3, ~8,800 skills after filtering noise (physical tools, generic words). Run `python bootstrap_ontologies.py` to refresh it when O*NET releases a new version (~every 6 months).
+
+The matched and missing skills appear per-job in `ats_skills_matched` / `ats_skills_missing` columns. Use these as concrete tailoring targets — the missing list is "skills in this posting that aren't visible in your resume."
+
+**Important:** this measures *vocabulary overlap*. Real ATSes vary widely (some keyword-match, some use embeddings, some don't auto-score at all — Greenhouse mostly defers to recruiters). Our score is a reasonable proxy for the keyword-matching kind, which is what most older enterprise ATSes do. It's not a guarantee any specific ATS would give the same score.
 
 ### 4. Domain fit score (0–100, embedding similarity — optional)
 
@@ -265,7 +274,7 @@ After running `pipeline.py`, you can re-analyze any specific job in verbose mode
 python audit.py <job-url-from-results.json>
 ```
 
-Prints (a) Claude's full reasoning chain, (b) per-requirement breakdown showing which lines from your resume were used as evidence for each requirement, (c) ATS keyword analysis with matches/gaps, and (d) the verbatim requirements section from the posting.
+Prints (a) Claude's full reasoning chain, (b) per-requirement breakdown showing which lines from your resume were used as evidence for each requirement, (c) the score-derivation math (base + penalties), (d) ATS skills matched/missing (from the O*NET ontology), and (e) the verbatim requirements section.
 
 Use this when:
 - A score surprises you and you want to understand why
@@ -273,6 +282,43 @@ Use this when:
 - You're deciding whether to tailor for a `stretch` match — see exactly what's missing first
 
 Cost: ~$0.04 per audit (uses higher effort than the main run for more detailed reasoning).
+
+## Check whether your real PDF/DOCX would survive an ATS parser
+
+The pipeline scores using your clean `resume.md`, but actual ATSes parse PDF or DOCX files — and parsing is often imperfect (tables get jumbled, multi-column layouts read top-to-bottom instead of side-by-side, fancy fonts produce garbled text). If you have a real `resume.pdf` or `resume.docx` you'd actually upload, drop it in the project directory and run:
+
+```bash
+python check_resume_format.py
+```
+
+What it does:
+- Extracts text from the file using PyPDF2 (PDFs) or python-docx (DOCX), with deliberately *simple* parsing — mimicking what an old ATS does, no smart layout reconstruction
+- Compares the extracted text against your `resume.md`
+- Flags content loss, missing section headings, header/footer leakage, multi-column issues, encoding glitches, embedded tables
+- Saves the actual extracted text to `resume.extracted.<format>.txt` so you can see exactly what an ATS would receive
+
+This is a one-time check (re-run when you update your PDF). Doesn't affect any scoring — purely diagnostic.
+
+Output looks like:
+```
+Resume PDF/DOCX format check
+─────────────────────────────────────────
+Source:    resume.md
+Extract:   resume.pdf  (PDF)
+
+  resume.md      5,247 chars   800 words
+  resume.pdf     4,832 chars   720 words
+  word retention: 90%
+
+⚠  Multi-column layout detected on page 1.
+   Skills section may read jumbled in ATS.
+
+⚠  3 line(s) appear 3+ times — likely header/footer being parsed
+   into body content.
+
+Extracted text saved
+  resume.extracted.pdf.txt
+```
 
 ## Auto-extract keywords from your resume
 
