@@ -232,7 +232,7 @@ def derive_qualification_score(qm: QualificationMatch) -> tuple[int, str, dict]:
 
     adjustments = degree_penalty + years_penalty
     score = max(0, min(100, round(base + adjustments)))
-    verdict = "qualified" if score >= 90 else "stretch" if score >= 60 else "not_qualified"
+    verdict = "qualified" if score >= 80 else "stretch" if score >= 60 else "not_qualified"
 
     return score, verdict, {
         "requirements_met": met,

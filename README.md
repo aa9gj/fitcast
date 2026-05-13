@@ -68,8 +68,6 @@ For context: LinkedIn Premium Career is $40/month; most "AI resume tailoring" Sa
 
 **Account setup:** Anthropic requires a minimum **$5 credit** to start using the API. That covers ~10 full runs at default settings — enough to decide if the tool is worth it before adding more.
 
-> *Note on prompt caching:* the pipeline uses Anthropic's prompt-caching API, but a typical resume + system prompt (~1,500 tokens) sits under the model's minimum cacheable-prefix size, so the cache is a silent no-op for most users. Affects cost, not correctness.
-
 ## What you get
 
 `results.csv` is sorted by qualification score (best matches first). Key columns:
@@ -77,8 +75,9 @@ For context: LinkedIn Premium Career is $40/month; most "AI resume tailoring" Sa
 | Column | What's in it |
 |---|---|
 | `score` | 0–100 qualification fit — does the candidate actually meet the requirements? |
-| `verdict` | `qualified` / `stretch` / `not_qualified` |
+| `verdict` | `qualified` (≥80) / `stretch` (60–79) / `not_qualified` (<60) |
 | `ats_score` | 0–100 keyword alignment with the posting (separate from `score` — can diverge) |
+| `domain_fit_score` | 0–100 topical similarity (resume × posting embedding cosine). Empty if `sentence-transformers` isn't installed. |
 | `title`, `company`, `location` | Self-explanatory |
 | `url` | **Direct link to apply** — opens in your browser |
 | `posted_at` | When the job was posted/updated |
@@ -124,7 +123,7 @@ degree_penalty = -30 if resume degree is below the posting's requirement, else 0
 years_penalty  = -5 per year short on experience, capped at -30
 
 score = clamp(base_score + degree_penalty + years_penalty, 0, 100)
-verdict = "qualified" if score >= 90 else "stretch" if score >= 60 else "not_qualified"
+verdict = "qualified" if score >= 80 else "stretch" if score >= 60 else "not_qualified"
 ```
 
 Every input is in `results.json` under `score_components` and `breakdown`:
@@ -319,9 +318,10 @@ Re-run periodically to refresh. Delete `companies.bootstrap.yaml` to revert.
 1. **Scrape** — pulls jobs from Greenhouse + The Muse in parallel.
 2. **Filter** — date / keyword / already-applied filters; dedupes by URL.
 3. **Pre-rank (optional)** — Haiku 4.5 cheaply scores each candidate 0–10 for resume relevance; takes the top `max_jobs`.
-4. **Deep analyze** — Sonnet 4.6 (adaptive thinking, structured output) returns the verbatim requirements section, qualification verdict + score + matched/missing list, and ATS keyword assessment.
-5. **Rank & write** — sorts by qualification score, writes `results.csv` + `results.json`.
-6. **Tailor (separate command)** — `tailor.py` rewrites your resume per-job, staying strictly truthful.
+4. **Extract** — Sonnet 4.6 (adaptive thinking, structured output) extracts the requirements section, per-requirement evidence with confidence levels, quantitative inputs (years/degree), and ATS keyword data. Claude does extraction + judgment per item, *not* score-picking.
+5. **Score** — derive qualification score + verdict from the extraction (formulas in [How scoring works](#how-scoring-works)), derive ATS score from keyword overlap, compute domain fit from sentence-transformer embeddings.
+6. **Rank & write** — sort by qualification score, write `results.csv` + `results.json`.
+7. **Tailor (separate command)** — `tailor.py` rewrites your resume per-job, staying strictly truthful.
 
 ### Choice of model
 
