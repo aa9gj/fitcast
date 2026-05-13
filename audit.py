@@ -125,14 +125,17 @@ def main() -> None:
 
     analysis = JobAnalysis.model_validate_json(out)
     qm = analysis.qualification_match
+    ats = analysis.ats_assessment
 
     # Derive the same scores the pipeline does.
     score, verdict, score_components = derive_qualification_score(qm)
 
-    # ATS via O*NET skill extraction.
+    # Hybrid ATS: O*NET ontology + Claude LLM extraction (union).
     extractor = get_extractor()
     resume_skills = extractor.extract(resume)
-    ats_score, ats_components, ats_matched, ats_missing = derive_ats_score(resume_skills, posting_text)
+    ats_score, ats_components, ats_matched, ats_missing = derive_ats_score(
+        resume_skills, posting_text, ats
+    )
 
     # Domain fit if available.
     domain_fit = None
@@ -163,12 +166,18 @@ def main() -> None:
     print(f"  Adjustments total:       {sc['adjustments_total']:+d}")
     print(f"  Final score:             {score} → {verdict}")
 
-    print(_bar("ATS score derivation (skill-ontology overlap)"))
+    print(_bar("ATS score derivation (hybrid: O*NET + Claude extraction)"))
     ac = ats_components
-    print(f"  Ontology:                {ac.get('ontology', 'O*NET 28.3 + supplement')}")
-    print(f"  Skills in posting:       {ac['skills_in_posting']}")
-    print(f"  Skills matched in resume:{ac['skills_matched']}  "
+    print(f"  Methodology:             {ac.get('methodology', '?')}")
+    print(f"  From O*NET ontology:     {ac.get('onet_matched', 0)} matched, "
+          f"{ac.get('onet_missing', 0)} missing")
+    print(f"  From LLM extraction:     {ac.get('llm_matched', 0)} matched, "
+          f"{ac.get('llm_missing', 0)} missing")
+    print(f"  After dedup (union):     {ac.get('skills_matched', 0)} matched of "
+          f"{ac.get('skills_total', 0)} total skills "
           f"(ratio {ac.get('match_ratio', '?')})")
+    if ac.get("format_warnings_penalty"):
+        print(f"  Format-warning penalty:  {ac['format_warnings_penalty']:+d}")
     print(f"  Final ATS score:         {ats_score}")
 
     print(_bar("Per-requirement evidence"))
@@ -180,20 +189,23 @@ def main() -> None:
         print(f"  {mark} [{conf}] {r.requirement}")
         print(f"        evidence: {r.evidence}\n")
 
-    print(_bar("ATS skill analysis (O*NET ontology — fully reproducible)"))
+    print(_bar("ATS skill analysis (hybrid — union of ontology + LLM extraction)"))
     if ats_matched:
         print(f"  Skills matched (in both posting AND your resume): {len(ats_matched)}")
-        for kw in sorted(ats_matched):
+        for kw in ats_matched:
             print(f"    ✓ {kw}")
     if ats_missing:
         print(f"\n  Skills missing (in posting, NOT in your resume): {len(ats_missing)}")
         print(f"  (Add these to your resume only when you genuinely have the experience.)")
-        for kw in sorted(ats_missing):
+        for kw in ats_missing:
             print(f"    ✗ {kw}")
     if not ats_matched and not ats_missing:
-        print("  (No skills from the O*NET ontology found in the posting.)")
-    print(f"\n  For format issues (table parsing, layout problems), run: "
-          f"python check_resume_format.py")
+        print("  (No skills identified.)")
+    if ats.format_warnings:
+        print(f"\n  Format warnings (from Claude's reading of resume.md):")
+        for w in ats.format_warnings:
+            print(f"    ! {w}")
+    print(f"\n  For real PDF/DOCX format checks, run: python check_resume_format.py")
 
     print(_bar("Requirements section (verbatim from posting)"))
     if analysis.requirements_section.found:

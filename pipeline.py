@@ -99,9 +99,19 @@ class QualificationMatch(BaseModel):
     rationale: str
 
 
+class ATSAssessment(BaseModel):
+    """Claude-extracted keyword data. Used alongside the O*NET ontology for a
+    hybrid ATS score — Claude catches keywords the ontology misses (new tech,
+    niche terms, soft skills); the ontology provides a deterministic floor."""
+    keyword_matches: list[str]
+    keyword_gaps: list[str]
+    format_warnings: list[str]
+
+
 class JobAnalysis(BaseModel):
     requirements_section: RequirementsSection
     qualification_match: QualificationMatch
+    ats_assessment: ATSAssessment
 
 
 ANALYSIS_SCHEMA: dict = {
@@ -164,8 +174,30 @@ ANALYSIS_SCHEMA: dict = {
             "required": ["requirements", "breakdown", "rationale"],
             "additionalProperties": False,
         },
+        "ats_assessment": {
+            "type": "object",
+            "properties": {
+                "keyword_matches": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Important keywords from the posting that DO appear in the resume.",
+                },
+                "keyword_gaps": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Important keywords from the posting that are MISSING from the resume.",
+                },
+                "format_warnings": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Resume format issues detectable from text alone (rare with markdown). Use `check_resume_format.py` for the real PDF check.",
+                },
+            },
+            "required": ["keyword_matches", "keyword_gaps", "format_warnings"],
+            "additionalProperties": False,
+        },
     },
-    "required": ["requirements_section", "qualification_match"],
+    "required": ["requirements_section", "qualification_match", "ats_assessment"],
     "additionalProperties": False,
 }
 
@@ -228,37 +260,84 @@ def derive_qualification_score(qm: QualificationMatch) -> tuple[int, str, dict]:
     }
 
 
-def derive_ats_score(resume_skills: set[str], posting_text: str) -> tuple[int, dict, set[str], set[str]]:
-    """ATS score from O*NET skill-overlap percentage. Deterministic.
+def derive_ats_score(
+    resume_skills: set[str],
+    posting_text: str,
+    ats: ATSAssessment,
+) -> tuple[int, dict, list[str], list[str]]:
+    """Hybrid ATS score: union of O*NET ontology matching + Claude's LLM
+    keyword extraction. Score = |union_matched| / |union_total| × 100.
 
-    `resume_skills` is the pre-computed set of skills extracted from the
-    resume (extract once at start of run, reuse for all jobs).
+    Why hybrid:
+      - Ontology gives a deterministic floor (same posting → same skills,
+        every run) but is limited to ~8,800 known skills.
+      - LLM extraction catches things the ontology misses (brand-new tech,
+        niche tools, soft skills, context-aware mentions) but varies per run.
+      - Union of both = best of both: deterministic baseline + broad coverage.
 
-    Returns (score, components_dict, matched_skills, missing_skills).
+    Returns (score, components_dict, matched_list, missing_list).
     """
     extractor = get_extractor()
     posting_skills = extractor.extract(posting_text)
+    onet_matched = resume_skills & posting_skills
+    onet_missing = posting_skills - resume_skills
 
-    if not posting_skills:
-        # Posting had no recognizable skills — neutral score.
+    llm_matched = set(ats.keyword_matches)
+    llm_missing = set(ats.keyword_gaps)
+
+    # Union with normalization to dedupe across sources (e.g., "Python" appears
+    # in both O*NET and Claude's extraction — should count once).
+    def norm(s: str) -> str:
+        return s.strip().lower()
+
+    matched_lookup: dict[str, str] = {}
+    for s in onet_matched:
+        matched_lookup[norm(s)] = s
+    for s in llm_matched:
+        if norm(s) not in matched_lookup:
+            matched_lookup[norm(s)] = s
+
+    missing_lookup: dict[str, str] = {}
+    for s in onet_missing:
+        missing_lookup[norm(s)] = s
+    for s in llm_missing:
+        n = norm(s)
+        if n not in missing_lookup and n not in matched_lookup:
+            missing_lookup[n] = s
+
+    matched = sorted(matched_lookup.values(), key=str.lower)
+    missing = sorted(missing_lookup.values(), key=str.lower)
+    total = len(matched) + len(missing)
+
+    if total == 0:
         return 50, {
             "skills_matched": 0,
-            "skills_in_posting": 0,
+            "skills_total": 0,
             "match_ratio": None,
-            "ontology": "O*NET 28.3 + supplement",
-        }, set(), set()
+            "methodology": "hybrid: O*NET ontology + Claude keyword extraction",
+            "onet_matched": 0,
+            "llm_matched": 0,
+            "format_warnings_count": len(ats.format_warnings),
+        }, matched, missing
 
-    matched = resume_skills & posting_skills
-    missing = posting_skills - resume_skills
-
-    match_ratio = len(matched) / len(posting_skills)
-    score = max(0, min(100, round(match_ratio * 100)))
+    match_ratio = len(matched) / total
+    raw = match_ratio * 100
+    # Small penalty for format warnings (more meaningful when running
+    # check_resume_format.py on a real PDF).
+    warning_penalty = -5 * len(ats.format_warnings)
+    score = max(0, min(100, round(raw + warning_penalty)))
 
     return score, {
         "skills_matched": len(matched),
-        "skills_in_posting": len(posting_skills),
+        "skills_total": total,
         "match_ratio": round(match_ratio, 2),
-        "ontology": "O*NET 28.3 + supplement",
+        "methodology": "hybrid: O*NET ontology + Claude keyword extraction (union)",
+        "onet_matched": len(onet_matched),
+        "onet_missing": len(onet_missing),
+        "llm_matched": len(llm_matched),
+        "llm_missing": len(llm_missing),
+        "format_warnings_count": len(ats.format_warnings),
+        "format_warnings_penalty": warning_penalty,
     }, matched, missing
 
 
@@ -634,7 +713,7 @@ def scrape_jobs(config: dict, client: anthropic.Anthropic, resume: str) -> list[
 
 # ──────────────────────────── Claude analysis ───────────────────────────────
 
-SYSTEM_INSTRUCTIONS = """You are a careful job-application analyst. For each job posting, EXTRACT the following — your job is per-requirement extraction and judgment, not picking aggregate scores. The pipeline computes the qualification score from your extraction; ATS score is computed independently via skill-ontology matching.
+SYSTEM_INSTRUCTIONS = """You are a careful job-application analyst. For each job posting, EXTRACT the following — your job is per-requirement extraction and keyword identification, not picking aggregate scores. The pipeline computes the qualification + ATS scores from your extraction.
 
 1. Find the section that lists minimum requirements / qualifications. Common headings: "Requirements", "Minimum Qualifications", "Basic Qualifications", "What You Bring", "Qualifications", "Required Experience". Quote it verbatim in `requirements_section.text`. If no clear section exists, set `found: false`.
 
@@ -653,7 +732,12 @@ SYSTEM_INSTRUCTIONS = """You are a careful job-application analyst. For each job
 
 4. Provide a 2-3 sentence `rationale` summarizing the overall fit honestly.
 
-Be terse. Ground every claim in what's actually in the resume. The Python pipeline derives the qualification score from this extraction — do NOT pick scores yourself."""
+5. Extract ATS keywords. The pipeline ALSO runs a deterministic O*NET ontology match independently — your job here is to catch the things the ontology might MISS: brand-new tech, niche tools, soft skills, multi-word phrases not in O*NET. Don't bother re-listing common skills (Python, SQL) — they'll be caught by the ontology. Focus on what's distinctive about THIS specific posting.
+   - `keyword_matches`: distinctive keywords from the posting that DO appear in the resume (only include things that aren't trivially obvious — focus on non-O*NET terms)
+   - `keyword_gaps`: distinctive keywords from the posting that are MISSING from the resume
+   - `format_warnings`: any format issues you can detect from the resume markdown (almost always empty for markdown input — empty list is fine)
+
+Be terse. Ground every claim in what's actually in the resume. The Python pipeline derives the scores from this extraction — do NOT pick scores yourself."""
 
 
 def analyze_job(client: anthropic.Anthropic, resume: str, job: dict) -> tuple[JobAnalysis | None, str]:
@@ -801,8 +885,11 @@ def main() -> None:
 
         # Derive scores deterministically from the extraction.
         qm = analysis.qualification_match
+        ats = analysis.ats_assessment
         score, verdict, score_components = derive_qualification_score(qm)
-        ats_score, ats_components, ats_matched, ats_missing = derive_ats_score(resume_skills, posting_text)
+        ats_score, ats_components, ats_matched, ats_missing = derive_ats_score(
+            resume_skills, posting_text, ats
+        )
         domain_fit = compute_domain_fit(resume_embedding, posting_text) if resume_embedding is not None else None
 
         posted_at = job.get("posted_at")
@@ -821,9 +908,11 @@ def main() -> None:
             "matched": [r.requirement for r in qm.requirements if r.met],
             "missing": [r.requirement for r in qm.requirements if not r.met],
             "rationale": qm.rationale,
-            # ATS skills from O*NET ontology (deterministic, reproducible).
-            "ats_skills_matched": sorted(ats_matched),
-            "ats_skills_missing": sorted(ats_missing),
+            # ATS skills — hybrid of O*NET ontology + Claude's LLM keyword
+            # extraction, deduplicated. Components show the source breakdown.
+            "ats_skills_matched": ats_matched,
+            "ats_skills_missing": ats_missing,
+            "ats_format_warnings": ats.format_warnings,
             "requirements_found": analysis.requirements_section.found,
             "requirements_heading": analysis.requirements_section.section_heading,
             "requirements_text": analysis.requirements_section.text,
@@ -857,7 +946,7 @@ def main() -> None:
             "requirements_met", "requirements_total",
             "missing", "matched",
             "ats_skills_missing", "ats_skills_matched",
-            "rationale",
+            "rationale", "ats_format_warnings",
             "requirements_heading", "requirements_text",
         ])
         writer.writeheader()
@@ -882,6 +971,7 @@ def main() -> None:
                 "ats_skills_missing": "; ".join(r["ats_skills_missing"]),
                 "ats_skills_matched": "; ".join(r["ats_skills_matched"]),
                 "rationale": r["rationale"],
+                "ats_format_warnings": "; ".join(r["ats_format_warnings"]),
                 "requirements_heading": r["requirements_heading"] or "",
                 "requirements_text": (r["requirements_text"] or "")[:800],
             })

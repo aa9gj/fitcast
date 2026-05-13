@@ -143,24 +143,34 @@ Every input is in `results.json` under `score_components` and `breakdown`:
 
 You can hand-check any score: "6/9 = 67 base, minus 10 for years, equals 57 → stretch." Run `python audit.py <url>` to print this breakdown for any job.
 
-### 3. ATS score (0–100, derived from O*NET skill overlap)
+### 3. ATS score (0–100, hybrid: O*NET ontology + LLM extraction)
 
-**No LLM, fully reproducible.** Both the posting and the resume are scanned for skill mentions against an explicit ontology — currently [O*NET](https://www.onetonline.org/) (US Department of Labor's occupational skills database, public domain) plus a small curated supplement of modern tech terms it doesn't index (`data/skills_supplement.txt`). The score is plain set arithmetic:
+Two independent skill-extraction passes are run on both the posting and the resume; the results are unioned and deduplicated:
 
+**Pass A — O*NET ontology (deterministic)**
+Both texts are scanned against an explicit ontology — [O*NET](https://www.onetonline.org/) (US Department of Labor's occupational skills database, public domain) plus a curated supplement of modern tech/data/methodology terms it doesn't index (`data/skills_supplement.txt`). The skill catalog (`data/skills.json`) ships with the repo: ~8,800 skills after filtering noise. Same text → exact same skills, every run.
+
+**Pass B — Claude keyword extraction (broad coverage)**
+Claude also identifies distinctive keywords from the posting that the ontology might miss: brand-new tech, niche tools, soft skills, multi-word phrases not in O*NET. Catches things like specific company-internal tools, freshly-coined ML terms, or domain phrases like "claims substantiation" if not in the supplement.
+
+**Combined score:**
 ```
-posting_skills = extract_skills(posting_text)   # e.g., {Python, AWS, Docker, Kubernetes, ...}
-resume_skills  = extract_skills(resume_text)    # e.g., {Python, R, SQL, Neo4j, ...}
+posting_skills = (O*NET skills in posting) ∪ (Claude's distinctive keywords)
+resume_skills  = (O*NET skills in resume)  ∪ (Claude's keyword_matches against resume)
 
 ats_score = |posting_skills ∩ resume_skills| / |posting_skills| × 100
 ```
 
-Same posting + same resume = same score. Every time. No "Claude in a different mood" variation.
+Why hybrid? Pure ontology is fully reproducible but bounded by what's in O*NET (~8,800 skills) and can't catch context-aware mentions. Pure LLM extraction is broad but mood-dependent. Union of both = deterministic baseline + broader coverage. The score is more stable than pure LLM and broader than pure ontology.
 
-**The skill catalog (`data/skills.json`) ships with the repo** — built from O*NET 28.3, ~8,800 skills after filtering noise (physical tools, generic words). Run `python bootstrap_ontologies.py` to refresh it when O*NET releases a new version (~every 6 months).
+The component breakdown is in `results.json` under `ats_components`:
+- `onet_matched` / `onet_missing` — pure-ontology numbers (would be the score if Pass A only)
+- `llm_matched` / `llm_missing` — Claude's contribution
+- `skills_matched` / `skills_total` — final union (used for the score)
 
-The matched and missing skills appear per-job in `ats_skills_matched` / `ats_skills_missing` columns. Use these as concrete tailoring targets — the missing list is "skills in this posting that aren't visible in your resume."
+Run `python audit.py <url>` to see all of this for any job.
 
-**Important:** this measures *vocabulary overlap*. Real ATSes vary widely (some keyword-match, some use embeddings, some don't auto-score at all — Greenhouse mostly defers to recruiters). Our score is a reasonable proxy for the keyword-matching kind, which is what most older enterprise ATSes do. It's not a guarantee any specific ATS would give the same score.
+**Important caveat:** real ATSes vary widely (some keyword-match exact strings, some use embeddings, some don't auto-score at all — Greenhouse mostly defers to recruiters). Our hybrid score is a reasonable proxy for the keyword-matching kind, which is what most older enterprise ATSes still do. It's not a guarantee any specific ATS would give the same score.
 
 ### 4. Domain fit score (0–100, embedding similarity — optional)
 
