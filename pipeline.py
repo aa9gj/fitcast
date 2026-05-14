@@ -66,7 +66,12 @@ HTTP_TIMEOUT_S = 20
 MUSE_MAX_PAGES_DEFAULT = 2
 ASHBY_MAX_PAGES_DEFAULT = 1  # Ashby's posting API returns all jobs in one shot.
 PRERANK_MAX_WORKERS = 10
-SCRAPE_MAX_WORKERS = 10
+# SCRAPE_MAX_WORKERS is kept conservative because at high parallelism, macOS's
+# mDNSResponder can fail transiently under burst DNS load — 10 workers
+# resolving 800+ unique hosts within a few seconds caused intermittent
+# NameResolutionError on otherwise-healthy networks. 4 is safe; raise it on
+# Linux where DNS bursts are handled fine by systemd-resolved / glibc.
+SCRAPE_MAX_WORKERS = 4
 PRERANK_MAX_TOKENS = 10
 PRERANK_FALLBACK_SCORE = 5
 ANALYSIS_MAX_TOKENS = 4000
