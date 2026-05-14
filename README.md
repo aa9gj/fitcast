@@ -6,8 +6,6 @@
 
 A small CLI that scrapes public job boards, asks Claude to find the requirements section in each posting, and predicts whether your resume qualifies you for the role — with a transparent score derivation, ATS-keyword matching against the O*NET skill ontology, and an option to generate per-job tailored resumes.
 
-**Access note:** the quickstart and Colab badge work for anyone once this repository is public. While the repo is private, clone/Colab access requires GitHub access to `aa9gj/fitcast`; use the local quickstart from an authenticated checkout.
-
 ## Quick start
 
 Requires **Python 3.10+**.
@@ -136,7 +134,7 @@ pip install -e ".[dev]"
 pytest tests/
 ```
 
-149 tests covering the score-derivation functions, source validation, state handling, location/salary/time-window filters, skill extractor, scrape orchestration (HTTP mocked), config schema validation, webhook notifications, and the SimplifyJobs slug bootstrap. All pure Python — no API calls.
+146 tests covering the score-derivation functions, source validation, orchestration, bootstrap helpers, state handling, location/salary/time-window filters, and the skill extractor. All pure Python — no API calls.
 
 CI runs the syntax check and tests on Python 3.10, 3.11, and 3.12 via GitHub Actions.
 
