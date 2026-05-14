@@ -61,9 +61,9 @@ There's no public directory of who uses which ATS. Slugs have to be found one co
 
 `python bootstrap_companies.py --write` pulls a community-maintained list ([SimplifyJobs](https://github.com/SimplifyJobs)) and extracts every Greenhouse slug it can find — usually 500–1000 companies. The pipeline picks them up automatically on the next run.
 
-> Don't confuse it with `bootstrap_ontologies.py` — that's a *different* script that builds the O*NET skill catalog (`data/skills.json`) used for ATS scoring. Same naming convention, different purposes:
+> Don't confuse it with `scripts/bootstrap_ontologies.py` — that's a *different* script that builds the O*NET skill catalog (`data/skills.json`) used for ATS scoring. Same naming convention, different purposes:
 > - `bootstrap_companies.py` → adds *Greenhouse company slugs* (for scraping)
-> - `bootstrap_ontologies.py` → builds the *O*NET skill catalog* (for ATS scoring)
+> - `scripts/bootstrap_ontologies.py` → builds the *O*NET skill catalog* (for ATS scoring)
 
 ```bash
 python bootstrap_companies.py           # preview slugs

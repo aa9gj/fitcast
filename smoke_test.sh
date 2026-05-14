@@ -91,7 +91,7 @@ fi
 section "3. Project files"
 
 for f in pipeline.py audit.py tailor.py track.py extract_keywords.py \
-         bootstrap_companies.py bootstrap_ontologies.py skill_extractor.py \
+         bootstrap_companies.py scripts/bootstrap_ontologies.py skill_extractor.py \
          check_resume_format.py compare_resumes.py \
          config.yaml requirements.txt requirements-full.txt requirements.lock \
          pyproject.toml .github/workflows/ci.yml resume.example.md; do
@@ -113,7 +113,7 @@ fi
 section "4. Python syntax"
 
 for f in pipeline.py audit.py tailor.py track.py extract_keywords.py \
-         bootstrap_companies.py bootstrap_ontologies.py skill_extractor.py \
+         bootstrap_companies.py scripts/bootstrap_ontologies.py skill_extractor.py \
          check_resume_format.py compare_resumes.py; do
     [[ -f "$f" ]] || continue
     if "$PY" -m py_compile "$f" 2>/dev/null; then
@@ -143,7 +143,7 @@ fi
 section "6. Skill extractor"
 
 if [[ ! -f data/skills.json ]]; then
-    warn "data/skills.json missing — run python bootstrap_ontologies.py"
+    warn "data/skills.json missing — run python scripts/bootstrap_ontologies.py"
 else
     SKILL_COUNT=$("$PY" -c "import json; print(json.load(open('data/skills.json'))['skill_count'])" 2>/dev/null || echo "?")
     ok "data/skills.json loaded ($SKILL_COUNT skills)"

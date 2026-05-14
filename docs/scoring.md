@@ -93,11 +93,13 @@ The component breakdown is in `results.json` under `ats_components`:
 
 This measures *vocabulary overlap*, which is what most older enterprise ATSes do (Workday, Taleo, iCIMS). Modern systems use embeddings (Eightfold, Phenom) or barely auto-score at all (Greenhouse defers to recruiters). Our hybrid score is a reasonable proxy — not a guarantee any specific ATS would give the same number.
 
-## 4. Domain fit score (0–100, embedding similarity — optional)
+## 4. Domain fit score (0–100, embedding similarity — optional) {#optional-domain-fit-score}
+
+> **Optional extra.** The two primary signals are qualification + ATS — they cover ~95% of what you'd want to know about a fit. Domain fit is a third angle that's useful occasionally but pulls in an ~80MB ML stack as a dependency, so it's gated behind a separate install.
 
 Cosine similarity between [sentence-transformer](https://www.sbert.net/) embeddings of your resume and the job posting, scaled to 0–100. Captures *topical* similarity even when specific keywords differ ("data pipelines" ≈ "ETL workflows" ≈ "data flow infrastructure").
 
-Requires `sentence-transformers` installed. It is optional because it pulls a large PyTorch/transformers stack; install it with `pip install -r requirements-full.txt` or `pip install -e ".[embeddings]"`. When the dependency is missing, `domain_fit_score` is simply omitted from results.
+Requires `sentence-transformers` installed. It is optional because it pulls a large PyTorch/transformers stack; install it with `pip install -r requirements-full.txt` or `pip install -e ".[embeddings]"`. When the dependency is missing, `domain_fit_score` is simply omitted from results — the qualification and ATS scores remain fully functional.
 
 ## Why four different angles?
 

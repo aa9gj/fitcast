@@ -1,7 +1,7 @@
 """skill_extractor.py — deterministic skill extraction from text.
 
 Loads the O*NET-derived skill catalog from data/skills.json (built by
-bootstrap_ontologies.py) and provides a fast n-gram matcher.
+scripts/bootstrap_ontologies.py) and provides a fast n-gram matcher.
 
 Usage:
     from skill_extractor import get_extractor
@@ -46,7 +46,7 @@ class SkillExtractor:
     def __init__(self) -> None:
         if not SKILLS_PATH.exists():
             raise FileNotFoundError(
-                f"{SKILLS_PATH} not found. Run `python bootstrap_ontologies.py` first."
+                f"{SKILLS_PATH} not found. Run `python scripts/bootstrap_ontologies.py` first."
             )
         data = json.loads(SKILLS_PATH.read_text())
         self.metadata = {k: v for k, v in data.items() if k != "skills"}
@@ -111,7 +111,7 @@ def get_extractor() -> SkillExtractor:
 # CLI for quick inspection: `python skill_extractor.py < some_text.txt`
 if __name__ == "__main__":
     if not SKILLS_PATH.exists():
-        sys.exit(f"Run `python bootstrap_ontologies.py` first to build {SKILLS_PATH}.")
+        sys.exit(f"Run `python scripts/bootstrap_ontologies.py` first to build {SKILLS_PATH}.")
     text = sys.stdin.read()
     if not text.strip():
         sys.exit("Pipe text in: `cat resume.md | python skill_extractor.py`")
