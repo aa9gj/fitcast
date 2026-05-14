@@ -57,24 +57,26 @@ There's no public directory of who uses which ATS. Slugs have to be found one co
 | `jobs.lever.co/<slug>` | Lever | the part after `.co/` |
 | `jobs.ashbyhq.com/<slug>` | Ashby | the part after `.com/` |
 
-## Auto-expanding the Greenhouse list
+## Auto-expanding all three slug-based sources
 
-`python bootstrap_companies.py --write` pulls a community-maintained list ([SimplifyJobs](https://github.com/SimplifyJobs)) and extracts every Greenhouse slug it can find — usually 500–1000 companies. The pipeline picks them up automatically on the next run.
+`python bootstrap_companies.py --write` pulls a community-maintained list ([SimplifyJobs](https://github.com/SimplifyJobs)) and extracts every Greenhouse / Lever / Ashby slug it can find. Pipeline picks them up on the next run, merged with anything you've configured by hand.
 
 > Don't confuse it with `scripts/bootstrap_ontologies.py` — that's a *different* script that builds the O*NET skill catalog (`data/skills.json`) used for ATS scoring. Same naming convention, different purposes:
-> - `bootstrap_companies.py` → adds *Greenhouse company slugs* (for scraping)
+> - `bootstrap_companies.py` → adds *company slugs* across three ATSes (for scraping)
 > - `scripts/bootstrap_ontologies.py` → builds the *O*NET skill catalog* (for ATS scoring)
 
 ```bash
-python bootstrap_companies.py           # preview slugs
+python bootstrap_companies.py           # preview slugs (counts per ATS)
 python bootstrap_companies.py --write   # save to companies.bootstrap.yaml
 ```
+
+The written file has three keys (`greenhouse_companies`, `lever_companies`, `ashby_companies`); pipeline.py merges each list with the corresponding `<source>.companies` block in your `config.yaml`.
+
+Expect Greenhouse to dominate (~500–1000 unique slugs in the SimplifyJobs dataset); Lever and Ashby coverage is smaller (~50–200 each) because fewer companies in that dataset use those ATSes. The pipeline silently skips slugs that 404, so over-inclusion is harmless.
 
 Caveat: SimplifyJobs is intern/new-grad focused, so the *roles* won't match a senior search — but the *companies* are the same companies that also post senior roles on those boards.
 
 Re-run periodically to refresh. Delete `companies.bootstrap.yaml` to revert.
-
-There's no equivalent bootstrap for Lever/Ashby yet (could be added — same architecture). For those, hand-curate.
 
 ## Why these four?
 

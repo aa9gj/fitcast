@@ -886,24 +886,35 @@ def update_seen_urls(seen: dict[str, dict], jobs: list[dict]) -> None:
         print(f"  ! couldn't update {SEEN_PATH.name}: {exc}", file=sys.stderr)
 
 
-def load_bootstrap_companies() -> list[str]:
+def load_bootstrap_companies() -> dict[str, list[str]]:
+    """Return bootstrapped slugs per source. Empty lists if no bootstrap file.
+
+    Always returns a dict with keys: 'greenhouse', 'lever', 'ashby'. Callers
+    can index without guarding for missing keys.
+    """
+    empty = {"greenhouse": [], "lever": [], "ashby": []}
     if not BOOTSTRAP_PATH.exists():
-        return []
+        return empty
     try:
         data = yaml.safe_load(BOOTSTRAP_PATH.read_text()) or {}
-        return data.get("greenhouse_companies") or []
     except (yaml.YAMLError, OSError):
-        return []
+        return empty
+    return {
+        "greenhouse": data.get("greenhouse_companies") or [],
+        "lever": data.get("lever_companies") or [],
+        "ashby": data.get("ashby_companies") or [],
+    }
 
 
 def enabled_sources(config: dict) -> list[str]:
     """Return enabled source names from config and generated bootstrap data."""
+    bootstrap = load_bootstrap_companies() if BOOTSTRAP_PATH.exists() else {}
     sources: list[str] = []
-    if ((config.get("greenhouse") or {}).get("companies")) or BOOTSTRAP_PATH.exists():
+    if ((config.get("greenhouse") or {}).get("companies")) or bootstrap.get("greenhouse"):
         sources.append("greenhouse")
-    if ((config.get("lever") or {}).get("companies")):
+    if ((config.get("lever") or {}).get("companies")) or bootstrap.get("lever"):
         sources.append("lever")
-    if ((config.get("ashby") or {}).get("companies")):
+    if ((config.get("ashby") or {}).get("companies")) or bootstrap.get("ashby"):
         sources.append("ashby")
     if config.get("muse"):
         sources.append("muse")
@@ -1141,23 +1152,29 @@ def _parallel_fetch(label: str, slugs: list[str], fetch_fn) -> list[dict]:
 def _collect_from_sources(config: dict) -> list[dict]:
     """Fetch jobs from every enabled source. Returns flat list."""
     all_jobs: list[dict] = []
-
-    # Greenhouse: hand-picked + bootstrap-expanded.
-    gh_companies = ((config.get("greenhouse") or {}).get("companies")) or []
     bootstrap = load_bootstrap_companies()
-    gh_all = list(dict.fromkeys(list(gh_companies) + list(bootstrap)))
-    if gh_all:
-        print(
-            f"({len(gh_companies)} configured + {len(bootstrap)} bootstrapped Greenhouse)",
-            file=sys.stderr,
-        )
+
+    def _merge_slugs(configured: list[str], bootstrapped: list[str], label: str) -> list[str]:
+        """Configured slugs first (user's curation wins ordering), then bootstrap."""
+        merged = list(dict.fromkeys(list(configured) + list(bootstrapped)))
+        if merged:
+            print(
+                f"({len(configured)} configured + {len(bootstrapped)} bootstrapped {label})",
+                file=sys.stderr,
+            )
+        return merged
+
+    gh_companies = ((config.get("greenhouse") or {}).get("companies")) or []
+    gh_all = _merge_slugs(gh_companies, bootstrap.get("greenhouse", []), "Greenhouse")
     all_jobs.extend(_parallel_fetch("greenhouse", gh_all, fetch_greenhouse_jobs))
 
     lever_companies = ((config.get("lever") or {}).get("companies")) or []
-    all_jobs.extend(_parallel_fetch("lever", lever_companies, fetch_lever_jobs))
+    lever_all = _merge_slugs(lever_companies, bootstrap.get("lever", []), "Lever")
+    all_jobs.extend(_parallel_fetch("lever", lever_all, fetch_lever_jobs))
 
     ashby_companies = ((config.get("ashby") or {}).get("companies")) or []
-    all_jobs.extend(_parallel_fetch("ashby", ashby_companies, fetch_ashby_jobs))
+    ashby_all = _merge_slugs(ashby_companies, bootstrap.get("ashby", []), "Ashby")
+    all_jobs.extend(_parallel_fetch("ashby", ashby_all, fetch_ashby_jobs))
 
     muse_cfg = config.get("muse")
     if muse_cfg:
