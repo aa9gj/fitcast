@@ -35,7 +35,9 @@ try:
 except ImportError:
     _HAS_REQUESTS = False
 
-ROOT = Path(__file__).parent
+# This script lives in scripts/ but writes to the project's data/ directory,
+# so ROOT must walk up one level.
+ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
 SKILLS_PATH = DATA_DIR / "skills.json"
 SUPPLEMENT_PATH = DATA_DIR / "skills_supplement.txt"

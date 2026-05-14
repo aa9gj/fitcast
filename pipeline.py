@@ -59,6 +59,204 @@ LEVER_BASE = "https://api.lever.co/v0/postings"
 ASHBY_BASE = "https://api.ashbyhq.com/posting-api/job-board"
 MUSE_BASE = "https://www.themuse.com/api/public/jobs"
 
+# Tunables. Module-level so they're discoverable in one place rather than
+# scattered through the fetchers. The user-facing ones (salary bounds,
+# min_job_text_chars) are also overridable via config.yaml.
+HTTP_TIMEOUT_S = 20
+MUSE_MAX_PAGES_DEFAULT = 2
+ASHBY_MAX_PAGES_DEFAULT = 1  # Ashby's posting API returns all jobs in one shot.
+PRERANK_MAX_WORKERS = 10
+SCRAPE_MAX_WORKERS = 10
+PRERANK_MAX_TOKENS = 10
+PRERANK_FALLBACK_SCORE = 5
+ANALYSIS_MAX_TOKENS = 4000
+MIN_JOB_TEXT_CHARS = 100
+SALARY_FLOOR_USD = 30_000
+SALARY_CEILING_USD = 2_000_000
+WATCH_MIN_INTERVAL_S = 60
+
+
+# ─────────────────────────── Error tracking ─────────────────────────────────
+# Per-run error counter so the final summary can show what failed without
+# the user having to scroll through stderr. Categories are coarse on purpose
+# — the goal is "you had 3 fetch failures and 1 parse error," not a full
+# log replacement.
+
+
+class _RunErrors:
+    """Per-run counter of errors by category, with helpers to print a summary."""
+
+    def __init__(self) -> None:
+        self.counts: dict[str, int] = {}
+
+    def add(self, category: str) -> None:
+        self.counts[category] = self.counts.get(category, 0) + 1
+
+    def reset(self) -> None:
+        self.counts = {}
+
+    def summary(self) -> str | None:
+        if not self.counts:
+            return None
+        rows = ", ".join(f"{cat}: {n}" for cat, n in sorted(self.counts.items()))
+        total = sum(self.counts.values())
+        return f"{total} non-fatal errors during this run ({rows})"
+
+
+_run_errors = _RunErrors()
+
+
+# ────────────────────────── Webhook notifications ────────────────────────────
+# Optional end-of-run POST when new top matches appear. Designed for cron
+# scheduling — you don't have to open results.csv to find out something good
+# came up. Compatible with Slack/Discord incoming webhooks and any generic
+# JSON endpoint.
+
+WEBHOOK_TIMEOUT_S = 5  # short — failure should never block a successful run
+
+
+def _build_webhook_payload(new_top_jobs: list[dict], total_results: int) -> dict:
+    """Shape sent to the user's webhook. Kept small and stable."""
+    return {
+        "run_completed_at": datetime.now(timezone.utc).isoformat(),
+        "new_top_jobs": [
+            {
+                "score": r["score"],
+                "title": r["title"],
+                "company": r["company"],
+                "url": r["url"],
+                "verdict": r["verdict"],
+            }
+            for r in new_top_jobs
+        ],
+        "total_results": total_results,
+        "total_new_top_jobs": len(new_top_jobs),
+    }
+
+
+def post_webhook_notification(
+    webhook_url: str,
+    results: list[dict],
+    pre_run_seen_urls: set[str],
+    *,
+    min_score: int = 70,
+    max_jobs: int = 5,
+) -> None:
+    """POST a summary of new top matches. Failures log but don't crash."""
+    if not webhook_url:
+        return
+    new_top = [
+        r for r in results
+        if r["url"] not in pre_run_seen_urls and r["score"] >= min_score
+    ][:max_jobs]
+    if not new_top:
+        return
+    payload = _build_webhook_payload(new_top, len(results))
+    # Slack/Discord webhooks accept "text" as the human-readable summary;
+    # generic endpoints get the structured payload. Including both is harmless.
+    payload["text"] = (
+        f"fitcast: {len(new_top)} new job"
+        f"{'s' if len(new_top) != 1 else ''} scored ≥ {min_score}/100. "
+        f"Top: {new_top[0]['title']} @ {new_top[0]['company']} "
+        f"({new_top[0]['score']}/100)."
+    )
+    try:
+        requests.post(webhook_url, json=payload, timeout=WEBHOOK_TIMEOUT_S)
+        print(f"Posted webhook notification ({len(new_top)} new top jobs).", file=sys.stderr)
+    except requests.RequestException as exc:
+        print(f"  ! webhook POST failed: {exc}", file=sys.stderr)
+        _run_errors.add("webhook")
+
+
+# ────────────────────── Config schema (config.yaml) ─────────────────────────
+# Pydantic models with extra="forbid" so a typo in a top-level key (e.g.
+# `greenhose:` instead of `greenhouse:`) fails fast with a clear message
+# instead of silently disabling that source.
+
+
+class _StrictModel(BaseModel):
+    model_config = {"extra": "forbid"}
+
+
+class GreenhouseConfig(_StrictModel):
+    companies: list[str] = Field(default_factory=list)
+
+
+class LeverConfig(_StrictModel):
+    companies: list[str] = Field(default_factory=list)
+
+
+class AshbyConfig(_StrictModel):
+    companies: list[str] = Field(default_factory=list)
+
+
+class MuseConfig(_StrictModel):
+    categories: list[str] = Field(default_factory=list)
+    levels: list[str] = Field(default_factory=list)
+    locations: list[str] = Field(default_factory=list)
+    max_pages: int = MUSE_MAX_PAGES_DEFAULT
+
+
+class LocationFilterConfig(_StrictModel):
+    cities: list[str] = Field(default_factory=list)
+    include: list[str] = Field(default_factory=list)
+    exclude: list[str] = Field(default_factory=list)
+
+
+class SalaryFilterConfig(_StrictModel):
+    min: int | None = None
+    max: int | None = None
+
+
+class PrerankConfig(_StrictModel):
+    enabled: bool = False
+    threshold: int = 5
+    max_candidates: int = 100
+
+
+class NotifyConfig(_StrictModel):
+    """Optional webhook called at end-of-run when new top matches appear."""
+    webhook_url: str | None = None
+    min_score: int = 70
+    max_jobs: int = 5
+
+
+class PipelineConfig(_StrictModel):
+    greenhouse: GreenhouseConfig | None = None
+    lever: LeverConfig | None = None
+    ashby: AshbyConfig | None = None
+    muse: MuseConfig | None = None
+    keywords: list[str] = Field(default_factory=list)
+    max_jobs: int = 10
+    posted_within_hours: int | str | None = None
+    location_filter: LocationFilterConfig | None = None
+    salary_filter: SalaryFilterConfig | None = None
+    prerank: PrerankConfig | None = None
+    notify: NotifyConfig | None = None
+
+
+def validate_config(raw: dict) -> dict:
+    """Validate config.yaml structure. Exits on error; returns raw on success.
+
+    We return the original dict (not the pydantic model) so the rest of the
+    code can keep its `config.get("greenhouse", {}).get("companies", [])` style
+    without churn. The model is only used here for validation.
+    """
+    try:
+        PipelineConfig.model_validate(raw)
+    except ValidationError as exc:
+        lines = ["Error: config.yaml has problems:"]
+        for err in exc.errors():
+            loc = ".".join(str(p) for p in err["loc"]) or "<root>"
+            lines.append(f"  - {loc}: {err['msg']}")
+        lines.append(
+            "\nTip: 'extra inputs not permitted' usually means a typo in a "
+            "top-level key (e.g. 'greenhose:' instead of 'greenhouse:'). "
+            "Check spelling against config.example.yaml."
+        )
+        sys.exit("\n".join(lines))
+    return raw
+
 
 # ─────────────── Output schema (extracted from Claude) ──────────────────────
 
@@ -470,19 +668,51 @@ def _parse_iso(ts: str | None) -> datetime | None:
         return None
 
 
-# ─────────────────────────── Source: Greenhouse ─────────────────────────────
+# ─────────────────────────── Shared HTTP helper ─────────────────────────────
 
-def fetch_greenhouse_jobs(slug: str) -> list[dict]:
-    url = f"{GREENHOUSE_BASE}/{slug}/jobs"
+def _safe_get_json(
+    url: str,
+    *,
+    label: str,
+    params: dict | list | None = None,
+    timeout: int = HTTP_TIMEOUT_S,
+    silent_404: bool = True,
+):
+    """GET a JSON endpoint with consistent error handling.
+
+    Returns the parsed JSON on success, or None on any failure (network error,
+    HTTP error, malformed body). 404s are silent by default — fetchers
+    over-include slugs and rely on this to skip stale ones cheaply.
+    """
     try:
-        resp = requests.get(url, params={"content": "true"}, timeout=20)
+        resp = requests.get(url, params=params, timeout=timeout)
         resp.raise_for_status()
     except requests.RequestException as exc:
         status = getattr(getattr(exc, "response", None), "status_code", None)
-        if status != 404:
-            print(f"  ! greenhouse/{slug}: {exc}", file=sys.stderr)
+        if not (silent_404 and status == 404):
+            print(f"  ! {label}: {exc}", file=sys.stderr)
+            _run_errors.add(f"fetch:{label.split('/')[0]}")
+        return None
+    try:
+        return resp.json()
+    except ValueError as exc:
+        # Upstream returned 200 with HTML, empty body, or other non-JSON
+        # content. Before this guard, any of these would crash the entire run.
+        print(f"  ! {label}: invalid JSON response ({exc})", file=sys.stderr)
+        _run_errors.add(f"fetch:{label.split('/')[0]}")
+        return None
+
+
+# ─────────────────────────── Source: Greenhouse ─────────────────────────────
+
+def fetch_greenhouse_jobs(slug: str) -> list[dict]:
+    data = _safe_get_json(
+        f"{GREENHOUSE_BASE}/{slug}/jobs",
+        params={"content": "true"},
+        label=f"greenhouse/{slug}",
+    )
+    if not data:
         return []
-    data = resp.json()
     jobs = []
     for j in data.get("jobs", []):
         jobs.append({
@@ -502,16 +732,13 @@ def fetch_greenhouse_jobs(slug: str) -> list[dict]:
 
 def fetch_lever_jobs(slug: str) -> list[dict]:
     """Fetch all jobs from one Lever public board (returns JSON array)."""
-    url = f"{LEVER_BASE}/{slug}"
-    try:
-        resp = requests.get(url, params={"mode": "json"}, timeout=20)
-        resp.raise_for_status()
-    except requests.RequestException as exc:
-        status = getattr(getattr(exc, "response", None), "status_code", None)
-        if status != 404:
-            print(f"  ! lever/{slug}: {exc}", file=sys.stderr)
+    data = _safe_get_json(
+        f"{LEVER_BASE}/{slug}",
+        params={"mode": "json"},
+        label=f"lever/{slug}",
+    )
+    if not isinstance(data, list):
         return []
-    data = resp.json()
     jobs = []
     for j in data:
         # Lever createdAt is a unix-millisecond timestamp.
@@ -543,16 +770,12 @@ def fetch_lever_jobs(slug: str) -> list[dict]:
 
 def fetch_ashby_jobs(slug: str) -> list[dict]:
     """Fetch all jobs from one Ashby public job board."""
-    url = f"{ASHBY_BASE}/{slug}"
-    try:
-        resp = requests.get(url, timeout=20)
-        resp.raise_for_status()
-    except requests.RequestException as exc:
-        status = getattr(getattr(exc, "response", None), "status_code", None)
-        if status != 404:
-            print(f"  ! ashby/{slug}: {exc}", file=sys.stderr)
+    data = _safe_get_json(
+        f"{ASHBY_BASE}/{slug}",
+        label=f"ashby/{slug}",
+    )
+    if not data:
         return []
-    data = resp.json()
     jobs = []
     for j in data.get("jobs", []):
         jobs.append({
@@ -574,7 +797,7 @@ def fetch_muse_jobs(
     categories: list[str],
     levels: list[str],
     locations: list[str],
-    max_pages: int = 2,
+    max_pages: int = MUSE_MAX_PAGES_DEFAULT,
 ) -> list[dict]:
     jobs: list[dict] = []
     for page in range(max_pages):
@@ -589,14 +812,15 @@ def fetch_muse_jobs(
         for loc in locations:
             params.append(("location", loc))
 
-        try:
-            resp = requests.get(MUSE_BASE, params=params, timeout=20)
-            resp.raise_for_status()
-        except requests.RequestException as exc:
-            print(f"  ! themuse: {exc}", file=sys.stderr)
+        data = _safe_get_json(
+            MUSE_BASE,
+            params=params,
+            label="themuse",
+            silent_404=False,
+        )
+        if not data:
             break
 
-        data = resp.json()
         for item in data.get("results", []):
             company = (item.get("company") or {}).get("name", "")
             location_names = [
@@ -726,15 +950,20 @@ def prerank_score_one(client: anthropic.Anthropic, resume_summary: str, job: dic
     try:
         resp = client.messages.create(
             model=PRERANK_MODEL,
-            max_tokens=10,
+            max_tokens=PRERANK_MAX_TOKENS,
             messages=[{"role": "user", "content": prompt}],
         )
-    except anthropic.APIError:
-        return 5
+    except (anthropic.APIError, anthropic.APIConnectionError, anthropic.APITimeoutError, ValueError) as exc:
+        # Don't crash the whole batch over one job — return the neutral
+        # midpoint so it sorts behind clearer signals. Network blips,
+        # transient 5xxs, and malformed responses all land here.
+        print(f"    ! prerank failed for {job.get('title','?')!r}: {exc}", file=sys.stderr)
+        _run_errors.add("prerank")
+        return PRERANK_FALLBACK_SCORE
     text = next((b.text for b in resp.content if b.type == "text"), "").strip()
     m = re.search(r"\d+", text)
     if not m:
-        return 5
+        return PRERANK_FALLBACK_SCORE
     return max(0, min(10, int(m.group(0))))
 
 
@@ -744,7 +973,7 @@ def prerank_jobs(
     jobs: list[dict],
     threshold: int,
     max_candidates: int,
-    max_workers: int = 10,
+    max_workers: int = PRERANK_MAX_WORKERS,
 ) -> list[dict]:
     if not jobs:
         return jobs
@@ -846,14 +1075,14 @@ def extract_salaries(text: str) -> list[int]:
             n = int(m.group(1).replace(",", ""))
         except (ValueError, TypeError):
             continue
-        if 30_000 <= n <= 2_000_000:
+        if SALARY_FLOOR_USD <= n <= SALARY_CEILING_USD:
             out.append(n)
     for m in _SALARY_K_RE.finditer(text):
         try:
             n = int(float(m.group(1)) * 1000)
         except (ValueError, TypeError):
             continue
-        if 30_000 <= n <= 2_000_000:
+        if SALARY_FLOOR_USD <= n <= SALARY_CEILING_USD:
             out.append(n)
     return out
 
@@ -902,38 +1131,34 @@ def _parallel_fetch(label: str, slugs: list[str], fetch_fn) -> list[dict]:
         return []
     print(f"Scraping {len(slugs)} {label} boards in parallel...", file=sys.stderr)
     out: list[dict] = []
-    with ThreadPoolExecutor(max_workers=10) as ex:
+    with ThreadPoolExecutor(max_workers=SCRAPE_MAX_WORKERS) as ex:
         for jobs in ex.map(fetch_fn, slugs):
             out.extend(jobs)
     print(f"  {label}: {len(out)} jobs", file=sys.stderr)
     return out
 
 
-def scrape_jobs(config: dict, client: anthropic.Anthropic, resume: str,
-                include_seen: bool = False) -> list[dict]:
-    keywords = config.get("keywords") or []
-    max_jobs = int(config.get("max_jobs", 10))
-    posted_within_hours = config.get("posted_within_hours")
+def _collect_from_sources(config: dict) -> list[dict]:
+    """Fetch jobs from every enabled source. Returns flat list."""
     all_jobs: list[dict] = []
 
-    # --- Greenhouse: hand-picked + bootstrap-expanded.
+    # Greenhouse: hand-picked + bootstrap-expanded.
     gh_companies = ((config.get("greenhouse") or {}).get("companies")) or []
     bootstrap = load_bootstrap_companies()
     gh_all = list(dict.fromkeys(list(gh_companies) + list(bootstrap)))
     if gh_all:
-        print(f"({len(gh_companies)} configured + {len(bootstrap)} bootstrapped Greenhouse)",
-              file=sys.stderr)
+        print(
+            f"({len(gh_companies)} configured + {len(bootstrap)} bootstrapped Greenhouse)",
+            file=sys.stderr,
+        )
     all_jobs.extend(_parallel_fetch("greenhouse", gh_all, fetch_greenhouse_jobs))
 
-    # --- Lever.
     lever_companies = ((config.get("lever") or {}).get("companies")) or []
     all_jobs.extend(_parallel_fetch("lever", lever_companies, fetch_lever_jobs))
 
-    # --- Ashby.
     ashby_companies = ((config.get("ashby") or {}).get("companies")) or []
     all_jobs.extend(_parallel_fetch("ashby", ashby_companies, fetch_ashby_jobs))
 
-    # --- The Muse.
     muse_cfg = config.get("muse")
     if muse_cfg:
         print("Querying The Muse...", file=sys.stderr)
@@ -941,41 +1166,39 @@ def scrape_jobs(config: dict, client: anthropic.Anthropic, resume: str,
             categories=muse_cfg.get("categories") or [],
             levels=muse_cfg.get("levels") or [],
             locations=muse_cfg.get("locations") or [],
-            max_pages=int(muse_cfg.get("max_pages", 2)),
+            max_pages=int(muse_cfg.get("max_pages", MUSE_MAX_PAGES_DEFAULT)),
         )
         print(f"  themuse: {len(muse_jobs)} jobs", file=sys.stderr)
         all_jobs.extend(muse_jobs)
 
-    fetched = len(all_jobs)
+    return all_jobs
 
-    filtered = [j for j in all_jobs if matches_keywords(j, keywords)]
+
+def _apply_filters(jobs: list[dict], config: dict, include_seen: bool) -> list[dict]:
+    """Apply keyword + time + location + salary + applied + seen filters."""
+    keywords = config.get("keywords") or []
+    posted_within_hours = config.get("posted_within_hours")
+
+    filtered = [j for j in jobs if matches_keywords(j, keywords)]
 
     posted_hours = parse_time_window(posted_within_hours)
     if posted_hours is not None:
         cutoff = datetime.now(timezone.utc) - timedelta(hours=posted_hours)
         before = len(filtered)
         filtered = [j for j in filtered if j.get("posted_at") and j["posted_at"] >= cutoff]
-        # Display label: human-readable form of the configured value.
         label = f"{posted_within_hours}" if posted_within_hours else f"{posted_hours}h"
-        print(
-            f"  date filter (last {label}): {before} -> {len(filtered)}",
-            file=sys.stderr,
-        )
+        print(f"  date filter (last {label}): {before} -> {len(filtered)}", file=sys.stderr)
 
     location_filter = config.get("location_filter")
     if location_filter:
         before = len(filtered)
         filtered = [j for j in filtered if matches_location(j, location_filter)]
-        print(
-            f"  location filter: {before} -> {len(filtered)}",
-            file=sys.stderr,
-        )
+        print(f"  location filter: {before} -> {len(filtered)}", file=sys.stderr)
 
     salary_filter = config.get("salary_filter")
     if salary_filter and (salary_filter.get("min") or salary_filter.get("max")):
         before = len(filtered)
         filtered = [j for j in filtered if matches_salary(j, salary_filter)]
-        # Build a human-readable label of what's being filtered.
         smin, smax = salary_filter.get("min"), salary_filter.get("max")
         if smin and smax:
             label = f"${int(smin):,}–${int(smax):,}"
@@ -992,12 +1215,8 @@ def scrape_jobs(config: dict, client: anthropic.Anthropic, resume: str,
     if applied_urls:
         before = len(filtered)
         filtered = [j for j in filtered if (j.get("url") or "") not in applied_urls]
-        print(
-            f"  skipping {before - len(filtered)} already-applied jobs",
-            file=sys.stderr,
-        )
+        print(f"  skipping {before - len(filtered)} already-applied jobs", file=sys.stderr)
 
-    # Skip jobs seen in any prior run (unless --include-seen).
     seen_record = load_seen_urls()
     if seen_record and not include_seen:
         seen_url_set = set(seen_record.keys())
@@ -1009,37 +1228,61 @@ def scrape_jobs(config: dict, client: anthropic.Anthropic, resume: str,
             file=sys.stderr,
         )
 
-    # Per-run dedup by URL (same job appearing in two sources).
-    in_run_seen: set[str] = set()
-    deduped: list[dict] = []
-    for j in filtered:
+    return filtered
+
+
+def _dedupe_by_url(jobs: list[dict]) -> list[dict]:
+    """Drop duplicate URLs (same posting can appear in multiple sources)."""
+    seen: set[str] = set()
+    out: list[dict] = []
+    for j in jobs:
         url = j.get("url") or ""
-        if url and url in in_run_seen:
+        if url and url in seen:
             continue
         if url:
-            in_run_seen.add(url)
-        deduped.append(j)
+            seen.add(url)
+        out.append(j)
+    return out
 
+
+def _select_top_jobs(
+    jobs: list[dict],
+    config: dict,
+    client: anthropic.Anthropic,
+    resume: str,
+) -> list[dict]:
+    """Pick the final pool: prerank with Haiku if enabled, else random sample."""
+    max_jobs = int(config.get("max_jobs", 10))
+    prerank_cfg = config.get("prerank") or {}
+    if prerank_cfg.get("enabled", False) and len(jobs) > max_jobs:
+        ranked = prerank_jobs(
+            client=client,
+            resume=resume,
+            jobs=jobs,
+            threshold=int(prerank_cfg.get("threshold", 5)),
+            max_candidates=int(prerank_cfg.get("max_candidates", 100)),
+        )
+        return ranked[:max_jobs]
+
+    random.seed(42)
+    pool = list(jobs)
+    random.shuffle(pool)
+    return pool[:max_jobs]
+
+
+def scrape_jobs(config: dict, client: anthropic.Anthropic, resume: str,
+                include_seen: bool = False) -> list[dict]:
+    """Scrape → filter → dedupe → select. Composition of testable stages."""
+    all_jobs = _collect_from_sources(config)
+    fetched = len(all_jobs)
+    filtered = _apply_filters(all_jobs, config, include_seen)
+    deduped = _dedupe_by_url(filtered)
     print(
         f"Pool: {fetched} fetched -> {len(filtered)} after filters -> "
         f"{len(deduped)} after dedup",
         file=sys.stderr,
     )
-
-    prerank_cfg = config.get("prerank") or {}
-    if prerank_cfg.get("enabled", False) and len(deduped) > max_jobs:
-        deduped = prerank_jobs(
-            client=client,
-            resume=resume,
-            jobs=deduped,
-            threshold=int(prerank_cfg.get("threshold", 5)),
-            max_candidates=int(prerank_cfg.get("max_candidates", 100)),
-        )
-        return deduped[:max_jobs]
-
-    random.seed(42)
-    random.shuffle(deduped)
-    return deduped[:max_jobs]
+    return _select_top_jobs(deduped, config, client, resume)
 
 
 # ──────────────────────────── Claude analysis ───────────────────────────────
@@ -1074,7 +1317,8 @@ Be terse. Ground every claim in what's actually in the resume. The Python pipeli
 def analyze_job(client: anthropic.Anthropic, resume: str, job: dict) -> tuple[JobAnalysis | None, str]:
     """Returns (analysis, posting_text). posting_text is saved for tailor.py / audit.py."""
     job_text = html_to_text(job["content_html"])
-    if len(job_text) < 100:
+    if len(job_text) < MIN_JOB_TEXT_CHARS:
+        _run_errors.add("analyze:short_posting")
         return None, job_text
 
     user_message = (
@@ -1086,7 +1330,7 @@ def analyze_job(client: anthropic.Anthropic, resume: str, job: dict) -> tuple[Jo
     try:
         response = client.messages.create(
             model=MODEL,
-            max_tokens=4000,
+            max_tokens=ANALYSIS_MAX_TOKENS,
             system=[
                 {"type": "text", "text": SYSTEM_INSTRUCTIONS},
                 {
@@ -1104,23 +1348,30 @@ def analyze_job(client: anthropic.Anthropic, resume: str, job: dict) -> tuple[Jo
         )
     except anthropic.APIError as exc:
         print(f"    ! Claude API error: {exc}", file=sys.stderr)
+        _run_errors.add("analyze:api")
         return None, job_text
 
     text = next((b.text for b in response.content if b.type == "text"), "")
     if not text:
         print("    ! Empty response from Claude", file=sys.stderr)
+        _run_errors.add("analyze:empty")
         return None, job_text
 
     try:
         return JobAnalysis.model_validate_json(text), job_text
     except (json.JSONDecodeError, ValidationError) as exc:
         print(f"    ! Failed to parse analysis: {exc}", file=sys.stderr)
+        _run_errors.add("analyze:parse")
         return None, job_text
 
 
 # ──────────────────────────────── Main ──────────────────────────────────────
 
 def main() -> None:
+    # Fresh error counter for this run — important for --watch mode so each
+    # iteration's summary reflects only that iteration.
+    _run_errors.reset()
+
     ap = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1146,14 +1397,22 @@ def main() -> None:
     ap.add_argument(
         "--watch",
         action="store_true",
-        help="Loop forever: run, sleep --interval, run again. Use Ctrl-C to stop. "
-             "Each run writes results.csv (overwriting). Pair with cron for scheduling instead "
-             "if you want logs and email-on-failure.",
+        help="(Prefer cron — see docs/customizing.md.) Loop forever: run, sleep "
+             "--interval, run again. Use Ctrl-C to stop. Each run writes "
+             "results.csv (overwriting). Cron gives you logs, email-on-failure, "
+             "and survives terminal/laptop sleep — --watch does not.",
     )
     ap.add_argument(
         "--interval",
         default="24h",
         help="When using --watch, time between runs. Examples: 24h, 12h, 6h, 30m, 2h30m.",
+    )
+    ap.add_argument(
+        "--notify-webhook",
+        default=None,
+        help="Override config.yaml's notify.webhook_url. POSTs a JSON summary of "
+             "new top matches (score >= notify.min_score) at end of run. Works "
+             "with Slack/Discord incoming webhooks and any generic JSON endpoint.",
     )
     args = ap.parse_args()
 
@@ -1165,6 +1424,7 @@ def main() -> None:
         sys.exit(f"Error: {CONFIG_PATH} not found.")
 
     config = yaml.safe_load(CONFIG_PATH.read_text()) or {}
+    validate_config(config)
     if args.max_jobs is not None:
         config["max_jobs"] = args.max_jobs
     resume = RESUME_PATH.read_text().strip()
@@ -1177,6 +1437,11 @@ def main() -> None:
             "(enable at least one of: greenhouse.companies, lever.companies, "
             "ashby.companies, or a muse: block)."
         )
+
+    # Snapshot which URLs are already in seen.json — used at end of run to
+    # decide which "top match" results should trigger the webhook (avoiding
+    # repeat pings for jobs you've already inspected once).
+    pre_run_seen_urls = set(load_seen_urls().keys())
 
     client = anthropic.Anthropic()
     jobs = scrape_jobs(config, client, resume, include_seen=args.include_seen)
@@ -1346,6 +1611,23 @@ def main() -> None:
                 "requirements_text": (r["requirements_text"] or "")[:800],
             })
 
+    # Webhook is optional: explicit --notify-webhook wins, otherwise fall back
+    # to config.yaml's notify block.
+    notify_cfg = config.get("notify") or {}
+    webhook_url = args.notify_webhook or notify_cfg.get("webhook_url")
+    if webhook_url:
+        post_webhook_notification(
+            webhook_url,
+            results,
+            pre_run_seen_urls,
+            min_score=int(notify_cfg.get("min_score", 70)),
+            max_jobs=int(notify_cfg.get("max_jobs", 5)),
+        )
+
+    summary = _run_errors.summary()
+    if summary:
+        print(f"\nNote: {summary}", file=sys.stderr)
+
     print(
         f"\nDone. Wrote {len(results)} results to {RESULTS_CSV.name} "
         f"and {RESULTS_JSON.name}.\n"
@@ -1372,8 +1654,11 @@ def _parse_interval(s: str) -> int:
             seconds += n * 60
         elif unit == "s":
             seconds += n
-    if seconds < 60:
-        raise ValueError(f"Interval too short: {seconds}s. Minimum is 60s to avoid hammering APIs.")
+    if seconds < WATCH_MIN_INTERVAL_S:
+        raise ValueError(
+            f"Interval too short: {seconds}s. Minimum is {WATCH_MIN_INTERVAL_S}s "
+            "to avoid hammering APIs."
+        )
     return seconds
 
 

@@ -144,9 +144,91 @@ Do NOT use tables, custom .cls files, or non-standard packages.
 """
 
 
+# ─────────────────────── Markdown alternatives ───────────────────────
+# For users who don't have a working LaTeX install or who want to paste
+# into Word/Pages/Notion. Same content shape, plain Markdown output.
+
+MARKDOWN_RESUME_GUIDE = """MARKDOWN OUTPUT FORMAT — read carefully:
+
+Produce a clean Markdown resume inside a ```markdown code fence.
+The output should paste cleanly into Word, Google Docs, Pages, or any editor.
+
+Suggested structure (adapt to the master resume's actual sections):
+
+# Full Name
+city, state · email · phone · [LinkedIn](url)
+
+## Summary
+(2-3 lines, focused on this role)
+
+## Experience
+
+### Job Title — Employer (location)
+*Month Year – Month Year*
+- Bullet point about a specific outcome
+- Another bullet with concrete metrics where the master resume has them
+
+### (repeat per role)
+
+## Education / Skills / Projects (as relevant)
+
+Use ONLY:
+  - Headings (#, ##, ###)
+  - **bold**, *italic*
+  - Bullet lists (- or *)
+  - Inline links [text](url)
+  - Plain paragraphs
+
+Do NOT use:
+  - HTML tags
+  - Markdown tables (poor ATS parsing)
+  - Custom CSS, frontmatter, or non-standard extensions
+"""
+
+MARKDOWN_LETTER_GUIDE = """MARKDOWN OUTPUT FORMAT — read carefully:
+
+Produce a clean Markdown cover letter inside a ```markdown code fence.
+
+Suggested structure:
+
+**Full Name**
+city, state · email · phone
+
+*Month Day, Year*
+
+**Hiring Team**
+**Company Name**
+
+Dear Hiring Team,
+
+(body — 3 to 4 paragraphs)
+
+Sincerely,
+Full Name
+
+Plain paragraphs. No bullets unless absolutely necessary. The output should
+paste cleanly into an email client or a Word document.
+"""
+
+
+def _resume_format_guide(fmt: str) -> tuple[str, str, str]:
+    """Returns (guide, fence_lang, file_extension) for the chosen output format."""
+    if fmt == "markdown":
+        return MARKDOWN_RESUME_GUIDE, "markdown", "md"
+    return LATEX_RESUME_GUIDE, "latex", "tex"
+
+
+def _letter_format_guide(fmt: str) -> tuple[str, str, str]:
+    if fmt == "markdown":
+        return MARKDOWN_LETTER_GUIDE, "markdown", "md"
+    return LATEX_LETTER_GUIDE, "latex", "tex"
+
+
 # ─────────────────────── system prompts ───────────────────────
 
-RESUME_SYSTEM = f"""You are tailoring a candidate's master resume for a specific job posting.
+def build_resume_system(fmt: str) -> str:
+    guide, fence_lang, _ext = _resume_format_guide(fmt)
+    return f"""You are tailoring a candidate's master resume for a specific job posting.
 
 YOUR JOB: rewrite the resume so it leads with the most relevant experience and uses the posting's exact vocabulary where the candidate genuinely has that experience.
 
@@ -168,10 +250,10 @@ YOU MAY:
 
 {DESLOP_RULES}
 
-{LATEX_RESUME_GUIDE}
+{guide}
 
 OUTPUT — TWO code fences in this order:
-1. ```latex … ``` — the full tailored resume as a compilable .tex file
+1. ```{fence_lang} … ``` — the full tailored resume
 2. ```changes … ``` — a Markdown bulleted list. One bullet per material
    change, each citing the line in the master resume that justifies it.
    If you cannot honestly tailor without inventing experience, say so
@@ -180,7 +262,9 @@ OUTPUT — TWO code fences in this order:
 Output nothing else outside those two fences."""
 
 
-COVER_SYSTEM = f"""You are writing a cover letter for a candidate applying to a specific job.
+def build_cover_system(fmt: str) -> str:
+    guide, fence_lang, _ext = _letter_format_guide(fmt)
+    return f"""You are writing a cover letter for a candidate applying to a specific job.
 
 PROCESS:
 1. Use the web_search tool (up to 3 queries) to find ONE recent, specific item about the company:
@@ -217,10 +301,10 @@ CONSTRAINTS:
 
 {DESLOP_RULES}
 
-{LATEX_LETTER_GUIDE}
+{guide}
 
-OUTPUT — exactly ONE ```latex … ``` code fence containing the full
-compilable .tex file. Output nothing else outside that fence."""
+OUTPUT — exactly ONE ```{fence_lang} … ``` code fence containing the full
+document. Output nothing else outside that fence."""
 
 
 # ─────────────────────── helpers ───────────────────────
@@ -252,12 +336,13 @@ def collect_text(response) -> str:
 
 # ─────────────────────── per-job calls ───────────────────────
 
-def tailor_resume(client: anthropic.Anthropic, resume: str, result: dict) -> tuple[str, str]:
-    """Returns (resume_latex, changes_markdown). Either may be empty on failure."""
+def tailor_resume(client: anthropic.Anthropic, resume: str, result: dict, fmt: str = "latex") -> tuple[str, str]:
+    """Returns (resume_text, changes_markdown). Either may be empty on failure."""
     posting = result.get("posting_text") or result.get("requirements_text", "")
     if not posting:
         return "", ""
 
+    _, fence_lang, _ext = _resume_format_guide(fmt)
     user_msg = f"""## Job Posting
 
 Title: {result.get('title', '')}
@@ -273,26 +358,27 @@ URL: {result.get('url', '')}
 
 ---
 
-Now produce the two code fences as instructed: ```latex first, then ```changes.
+Now produce the two code fences as instructed: ```{fence_lang} first, then ```changes.
 """
     response = client.messages.create(
         model=MODEL,
         max_tokens=8000,
-        system=RESUME_SYSTEM,
+        system=build_resume_system(fmt),
         thinking={"type": "adaptive"},
         output_config={"effort": "medium"},
         messages=[{"role": "user", "content": user_msg}],
     )
     full = collect_text(response)
-    return extract_fence(full, "latex"), extract_fence(full, "changes")
+    return extract_fence(full, fence_lang), extract_fence(full, "changes")
 
 
-def write_cover_letter(client: anthropic.Anthropic, resume: str, result: dict) -> str:
-    """Returns cover_latex (or empty string on failure)."""
+def write_cover_letter(client: anthropic.Anthropic, resume: str, result: dict, fmt: str = "latex") -> str:
+    """Returns cover_text (or empty string on failure)."""
     posting = result.get("posting_text") or result.get("requirements_text", "")
     if not posting:
         return ""
 
+    _, fence_lang, _ext = _letter_format_guide(fmt)
     user_msg = f"""## Job Posting
 
 Title: {result.get('title', '')}
@@ -310,13 +396,13 @@ URL: {result.get('url', '')}
 
 Process: search up to 3 times for ONE specific recent thing about
 {result.get('company', 'the company')} (last ~6 months), pick the best one,
-then write the cover letter as instructed. Output exactly one ```latex
-fence with the full compilable .tex file.
+then write the cover letter as instructed. Output exactly one ```{fence_lang}
+fence with the full document.
 """
     response = client.messages.create(
         model=MODEL,
         max_tokens=4000,
-        system=COVER_SYSTEM,
+        system=build_cover_system(fmt),
         thinking={"type": "adaptive"},
         output_config={"effort": "medium"},
         tools=[{
@@ -327,7 +413,7 @@ fence with the full compilable .tex file.
         messages=[{"role": "user", "content": user_msg}],
     )
     full = collect_text(response)
-    return extract_fence(full, "latex")
+    return extract_fence(full, fence_lang)
 
 
 # ─────────────────────── main ───────────────────────
@@ -345,6 +431,10 @@ def main() -> None:
                     help="Skip cover letter generation (resume only)")
     ap.add_argument("--no-resume", action="store_true",
                     help="Skip resume tailoring (cover letter only)")
+    ap.add_argument("--format", choices=["latex", "markdown"], default="latex",
+                    help="Output format. 'latex' (default) produces .tex files for "
+                         "pdflatex/tectonic/Overleaf; 'markdown' produces .md you "
+                         "can paste into Word/Docs/Notion (no LaTeX required).")
     args = ap.parse_args()
 
     if args.no_cover and args.no_resume:
@@ -391,6 +481,9 @@ def main() -> None:
     print(f"Tailoring {len(targets)} job(s) — generating {label} for each...\n",
           file=sys.stderr)
 
+    fmt = args.format
+    _, _, file_ext = _resume_format_guide(fmt)
+
     for i, result in enumerate(targets, 1):
         title = result.get("title", "?")
         company = result.get("company", "?")
@@ -400,21 +493,29 @@ def main() -> None:
               file=sys.stderr)
 
         ts = datetime.now(timezone.utc).isoformat()
-        latex_header = (
-            f"% Tailored for: {title} @ {company}\n"
-            f"% Job URL: {result.get('url', '')}\n"
-            f"% Generated: {ts}\n"
-            f"% Qualification: {score}/100   ATS: {result.get('ats_score', '?')}/100\n"
-            f"% Compile with: pdflatex {slug}_<resume|cover>.tex\n\n"
-        )
+        if fmt == "latex":
+            file_header = (
+                f"% Tailored for: {title} @ {company}\n"
+                f"% Job URL: {result.get('url', '')}\n"
+                f"% Generated: {ts}\n"
+                f"% Qualification: {score}/100   ATS: {result.get('ats_score', '?')}/100\n"
+                f"% Compile with: pdflatex {slug}_<resume|cover>.{file_ext}\n\n"
+            )
+        else:
+            file_header = (
+                f"<!-- Tailored for: {title} @ {company}\n"
+                f"     Job URL: {result.get('url', '')}\n"
+                f"     Generated: {ts}\n"
+                f"     Qualification: {score}/100   ATS: {result.get('ats_score', '?')}/100 -->\n\n"
+            )
 
         if do_resume:
-            resume_tex, changes_md = tailor_resume(client, resume, result)
-            if not resume_tex:
+            resume_body, changes_md = tailor_resume(client, resume, result, fmt)
+            if not resume_body:
                 print("    ! resume: empty / no posting text", file=sys.stderr)
             else:
-                resume_path = TAILORED_DIR / f"{slug}_resume.tex"
-                resume_path.write_text(latex_header + resume_tex + "\n")
+                resume_path = TAILORED_DIR / f"{slug}_resume.{file_ext}"
+                resume_path.write_text(file_header + resume_body + "\n")
                 print(f"    resume  -> {resume_path.relative_to(ROOT)}", file=sys.stderr)
             if changes_md:
                 changes_path = TAILORED_DIR / f"{slug}_changes.md"
@@ -429,18 +530,26 @@ def main() -> None:
                 print(f"    changes -> {changes_path.relative_to(ROOT)}", file=sys.stderr)
 
         if do_cover:
-            cover_tex = write_cover_letter(client, resume, result)
-            if not cover_tex:
+            cover_body = write_cover_letter(client, resume, result, fmt)
+            if not cover_body:
                 print("    ! cover: empty / no posting text", file=sys.stderr)
             else:
-                cover_path = TAILORED_DIR / f"{slug}_cover.tex"
-                cover_path.write_text(latex_header + cover_tex + "\n")
+                cover_path = TAILORED_DIR / f"{slug}_cover.{file_ext}"
+                cover_path.write_text(file_header + cover_body + "\n")
                 print(f"    cover   -> {cover_path.relative_to(ROOT)}", file=sys.stderr)
 
+    if fmt == "latex":
+        next_steps = (
+            "Compile with:  pdflatex tailored/<file>.tex\n"
+            "Or use tectonic (`tectonic tailored/<file>.tex`) or upload to Overleaf."
+        )
+    else:
+        next_steps = (
+            "Open the .md files in any editor, or paste into Word/Docs/Notion.\n"
+            "(For PDF output without LaTeX, pandoc tailored/<file>.md -o <file>.pdf works.)"
+        )
     print(
-        f"\nDone. Files in {TAILORED_DIR.relative_to(ROOT)}/.\n"
-        f"Compile with:  pdflatex tailored/<file>.tex\n"
-        f"Or use tectonic (`tectonic tailored/<file>.tex`) or upload to Overleaf.",
+        f"\nDone. Files in {TAILORED_DIR.relative_to(ROOT)}/.\n{next_steps}",
         file=sys.stderr,
     )
 

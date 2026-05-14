@@ -126,3 +126,13 @@ prerank:
   enabled: true
   threshold: 5         # 0-10 scale; jobs below this are dropped
   max_candidates: 100  # cap pre-rank pool size to bound cost
+
+# ─── Notifications (optional) ─────────────────────────────────────────────
+# POST a small JSON summary at end-of-run when new top-scoring jobs appear.
+# Designed for cron schedules — saves you from opening results.csv every time.
+# Works with Slack/Discord incoming webhooks and any generic JSON endpoint.
+# CLI override: `python pipeline.py --notify-webhook https://...`
+# notify:
+#   webhook_url: "https://hooks.slack.com/services/..."
+#   min_score: 75      # only notify when at least one new result hits this score
+#   max_jobs: 5        # cap items in the message body

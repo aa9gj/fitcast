@@ -15,7 +15,7 @@ from skill_extractor import SKILLS_PATH, get_extractor
 @pytest.fixture(scope="module")
 def extractor():
     if not SKILLS_PATH.exists():
-        pytest.skip(f"{SKILLS_PATH} not built — run `python bootstrap_ontologies.py`.")
+        pytest.skip(f"{SKILLS_PATH} not built — run `python scripts/bootstrap_ontologies.py`.")
     return get_extractor()
 
 

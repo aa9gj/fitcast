@@ -183,14 +183,23 @@ def detect_warnings(md_text: str, extracted_text: str, kind: str) -> list[str]:
         try:
             from docx import Document
             doc = Document(str(RESUME_DOCX))
+        except ImportError:
+            warnings.append(
+                "python-docx not installed — couldn't check for tables. "
+                "Install with `pip install python-docx`."
+            )
+        except (OSError, ValueError, KeyError) as exc:
+            warnings.append(
+                f"Couldn't open {RESUME_DOCX.name} for table check ({exc.__class__.__name__}: {exc}). "
+                f"The file may be corrupt or password-protected."
+            )
+        else:
             if doc.tables:
                 warnings.append(
                     f"{len(doc.tables)} table(s) detected. Many ATSes parse tables "
                     f"poorly — they may flatten columns or jumble row contents. "
                     f"Consider replacing with bullet lists."
                 )
-        except Exception:
-            pass
 
     return warnings
 

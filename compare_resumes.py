@@ -25,6 +25,7 @@ import sys
 from pathlib import Path
 
 import anthropic
+from pydantic import ValidationError
 
 from pipeline import (
     ANALYSIS_SCHEMA,
@@ -80,7 +81,7 @@ def analyze_with_resume(client, resume: str, posting_text: str, title: str, comp
         return None
     try:
         analysis = JobAnalysis.model_validate_json(text)
-    except Exception as exc:
+    except (json.JSONDecodeError, ValidationError) as exc:
         print(f"    ! parse error: {exc}", file=sys.stderr)
         return None
 

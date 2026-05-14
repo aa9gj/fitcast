@@ -205,26 +205,54 @@ For a pinned, known-good full development environment:
 pip install -r requirements.lock
 ```
 
-## Watch mode
+## Schedule recurring runs
 
-For "run this every day" without managing cron:
+**Recommended: cron.** It survives terminal close, laptop sleep, and reboots; gives you per-run logs in `/var/mail/$USER` and email-on-failure for free; and it's one less Python process to babysit.
+
+A typical setup — daily at 7am, redirecting stderr (the human log) to a dated file:
+
+```cron
+# crontab -e
+0 7 * * * cd /path/to/fitcast && /path/to/.venv/bin/python pipeline.py >> "logs/$(date +\%F).log" 2>&1
+```
+
+Pair with `--notify-webhook` (see next section) to get pinged on Slack/Discord when new high-score jobs land — no need to open `results.csv` after each run.
+
+**Alternative: `--watch` (in-process loop).** Simpler for laptop dev when you don't want to touch `crontab`. Loops forever; press Ctrl-C to stop. Does **not** survive laptop sleep or terminal close, doesn't rotate logs.
 
 ```bash
 python pipeline.py --watch --interval 24h
 ```
 
-Loops forever. Each run writes `results.csv` (overwriting). Press Ctrl-C to stop.
-
 Interval format: `24h`, `12h`, `6h`, `30m`, `2h30m`. Minimum 60 seconds (to avoid hammering APIs).
 
-For production use, **prefer cron**:
+## Get notified when new top matches appear
 
-```cron
-# /etc/crontab
-0 7 * * * cd /path/to/fitcast && /path/to/.venv/bin/python pipeline.py
+Skip the "open results.csv after each run" step by letting cron + a webhook do it. Add to `config.yaml`:
+
+```yaml
+notify:
+  webhook_url: "https://hooks.slack.com/services/..."  # Slack / Discord / generic
+  min_score: 75       # only notify if any result hits this score or higher
+  max_jobs: 5         # cap items in the message body
 ```
 
-Cron gives you logs and email-on-failure. Watch mode is simpler for dev/testing.
+Or override per-run from the CLI: `python pipeline.py --notify-webhook https://...`.
+
+The webhook receives a JSON POST with:
+
+```json
+{
+  "run_completed_at": "2025-05-14T07:00:12+00:00",
+  "new_top_jobs": [
+    {"score": 84, "title": "...", "company": "...", "url": "..."}
+  ],
+  "total_results": 10,
+  "total_new_top_jobs": 1
+}
+```
+
+Slack and Discord both accept this shape via their generic webhook URLs (no extra fields needed for the simplest "X new jobs found" message). For a richer formatted Slack message, wrap a Slack-formatted block in a small relay script.
 
 ## Tailor a resume + cover letter for a specific job
 
@@ -303,8 +331,8 @@ One-time diagnostic, doesn't affect any pipeline scores.
 The catalog ships pre-built (`data/skills.json`). To refresh after O*NET releases a new version (~every 6 months):
 
 ```bash
-python bootstrap_ontologies.py           # uses cached zip if present
-python bootstrap_ontologies.py --force   # re-download
+python scripts/bootstrap_ontologies.py           # uses cached zip if present
+python scripts/bootstrap_ontologies.py --force   # re-download
 ```
 
 To extend the supplement with terms O*NET still misses, edit `data/skills_supplement.txt` (one term per line, comments with `#`) and re-run bootstrap.

@@ -93,7 +93,7 @@ Auto-apply violates essentially every ATS's terms of service and reads as spam t
 | `track.py` | applied.json management |
 | `extract_keywords.py` | Suggest config.yaml keywords from resume |
 | `bootstrap_companies.py` | Add Greenhouse company slugs from SimplifyJobs (extends config.yaml's list) |
-| `bootstrap_ontologies.py` | Download/refresh the O*NET skill catalog (`data/skills.json`) |
+| `scripts/bootstrap_ontologies.py` | Download/refresh the O*NET skill catalog (`data/skills.json`). Maintenance-only — run once when O*NET ships a new version. |
 | `check_resume_format.py` | Test PDF/DOCX extraction against ATS parsers |
 | `skill_extractor.py` | Reusable: load skills.json + n-gram match |
 | `data/skills.json` | Pre-built O*NET + supplement skill catalog (committed) |

@@ -37,7 +37,6 @@ full = [
 py-modules = [
   "audit",
   "bootstrap_companies",
-  "bootstrap_ontologies",
   "check_resume_format",
   "compare_resumes",
   "extract_keywords",

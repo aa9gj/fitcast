@@ -36,7 +36,7 @@ For a reproducible full development environment, use `pip install -r requirement
 
 ## What you get
 
-Each run writes `results.csv` (sorted by qualification score) with columns: `score`, `verdict`, `ats_score`, `domain_fit_score`, `title`, `company`, `url`, `posted_at`, `missing` (requirements you don't meet), `matched`, `ats_skills_missing` (skills to add to your resume), `requirements_text` (verbatim from posting), and more.
+Each run writes `results.csv` (sorted by qualification score) with columns: `score`, `verdict`, `ats_score`, `title`, `company`, `url`, `posted_at`, `missing` (requirements you don't meet), `matched`, `ats_skills_missing` (skills to add to your resume), `requirements_text` (verbatim from posting), and more. An optional `domain_fit_score` column is also populated when the embeddings extra is installed — see [docs/scoring.md](docs/scoring.md#optional-domain-fit-score) for details.
 
 `results.json` adds the full per-requirement evidence chain and score-derivation breakdown — what `audit.py` prints in human-readable form.
 
@@ -46,16 +46,16 @@ Each run writes `results.csv` (sorted by qualification score) with columns: `sco
 |---|---|---|
 | `python pipeline.py` | Scrape + score + write `results.csv` | ~$0.30/run |
 | `python audit.py <url>` | Show the full score math + evidence for one job | ~$0.04 |
-| `python tailor.py --top 3` | Tailored LaTeX resume + cover letter (web-searches recent company news) per top match | ~$0.15 each |
+| `python tailor.py --top 3` | Tailored LaTeX resume + cover letter (web-searches recent company news) per top match. Add `--format markdown` for .md output (no LaTeX install needed). | ~$0.15 each |
 | `python check_resume_format.py` | Test your real PDF/DOCX against an ATS parser | $0 (local) |
 | `python extract_keywords.py` | Get personalized search keywords from your resume | ~$0.02 |
 | `python track.py mark <url>` | Mark a job as applied (auto-skip in future runs) | $0 |
 | `python compare_resumes.py r1.md r2.md --top 3` | A/B test two resume versions on the same jobs | ~$0.15 |
 | `python bootstrap_companies.py --write` | Add 500–1000 Greenhouse companies from SimplifyJobs | $0 (download only) |
-| `python bootstrap_ontologies.py` | Refresh the O*NET skill catalog | $0 (download only) |
+| `python scripts/bootstrap_ontologies.py` | Refresh the O*NET skill catalog (maintenance — once per O*NET release) | $0 (download only) |
 | `./smoke_test.sh [--paid]` | Verify every component end-to-end (~$0.20 with `--paid`) | $0 by default |
 
-Pipeline flags: `--dry-run`, `--max-jobs N`, `--include-seen`, `--watch --interval 24h`. See `python pipeline.py --help`.
+Pipeline flags: `--dry-run`, `--max-jobs N`, `--include-seen`, `--notify-webhook URL`. For unattended runs, **prefer cron** over `--watch` — see [docs/customizing.md](docs/customizing.md#schedule-recurring-runs). Full flag list: `python pipeline.py --help`.
 
 ## Cost summary
 
