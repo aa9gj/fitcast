@@ -19,6 +19,7 @@ import os
 import random
 import re
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
@@ -675,6 +676,14 @@ def _parse_iso(ts: str | None) -> datetime | None:
 
 # ─────────────────────────── Shared HTTP helper ─────────────────────────────
 
+# Number of retries on transient connection / DNS / timeout failures.
+# macOS's mDNSResponder occasionally fails the first resolution of a new
+# hostname mid-process; one retry after a short delay reliably fixes it
+# without slowing the happy path.
+HTTP_RETRY_ATTEMPTS = 1
+HTTP_RETRY_BACKOFF_S = 0.5
+
+
 def _safe_get_json(
     url: str,
     *,
@@ -688,16 +697,32 @@ def _safe_get_json(
     Returns the parsed JSON on success, or None on any failure (network error,
     HTTP error, malformed body). 404s are silent by default — fetchers
     over-include slugs and rely on this to skip stale ones cheaply.
+
+    Retries once on transient ConnectionError / Timeout (catches the
+    "first lookup of a new hostname failed" macOS DNS quirk).
     """
-    try:
-        resp = requests.get(url, params=params, timeout=timeout)
-        resp.raise_for_status()
-    except requests.RequestException as exc:
-        status = getattr(getattr(exc, "response", None), "status_code", None)
-        if not (silent_404 and status == 404):
+    last_exc = None
+    for attempt in range(HTTP_RETRY_ATTEMPTS + 1):
+        try:
+            resp = requests.get(url, params=params, timeout=timeout)
+            resp.raise_for_status()
+            break
+        except requests.RequestException as exc:
+            last_exc = exc
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            # 404 = slug is stale, don't waste a retry on it.
+            if silent_404 and status == 404:
+                return None
+            # Retry only on connection / timeout / DNS errors. HTTP 4xx/5xx
+            # responses to the request itself shouldn't be retried — they
+            # mean the upstream is reachable but refusing.
+            is_transient = isinstance(exc, (requests.ConnectionError, requests.Timeout))
+            if is_transient and attempt < HTTP_RETRY_ATTEMPTS:
+                time.sleep(HTTP_RETRY_BACKOFF_S * (attempt + 1))
+                continue
             print(f"  ! {label}: {exc}", file=sys.stderr)
             _run_errors.add(f"fetch:{label.split('/')[0]}")
-        return None
+            return None
     try:
         return resp.json()
     except ValueError as exc:
