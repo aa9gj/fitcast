@@ -32,6 +32,66 @@ Open `results.csv` in Google Sheets — sorted by score, URLs are clickable appl
 
 For a reproducible full development environment, use `pip install -r requirements.lock`. For editable installs, `pip install -e ".[dev]"` installs the test dependencies, and `pip install -e ".[dev,embeddings]"` also enables `domain_fit_score`.
 
+## Configure your search
+
+The only file you typically edit is [`config.yaml`](config.yaml). Four knobs cover almost every use case:
+
+```yaml
+# Where you want jobs to be:
+location_filter:
+  cities: [NC, Raleigh, Durham, Charlotte]   # word-boundary match (safe for short codes like "NC")
+  include: [remote, hybrid]                  # substring match (good for general terms)
+  exclude: [india, philippines]              # any match drops the job (wins over include)
+
+# Salary range (USD/year). Postings without a stated salary pass through unless filtered explicitly.
+salary_filter:
+  min: 85000     # drop if posting's stated max is below this
+  max: 150000
+
+# How fresh the posting needs to be. Accepts "24h", "7d", "1w", "1d12h", or an integer of hours.
+posted_within_hours: "24h"
+
+# Which companies to scrape:
+greenhouse:
+  companies: [flatironhealth, freenome, ...]   # hand-pick known companies
+```
+
+**Don't want to research company slugs?** Run `python bootstrap_companies.py --write` once. It pulls **~1,500 public companies** across Greenhouse / Lever / Ashby from the community-maintained SimplifyJobs lists, merged automatically into your next run. Your `location_filter` and `salary_filter` then narrow that broad pool to what matters to you. Free, ~30s.
+
+So you have two equivalent paths to broad coverage:
+- **Hand-curated:** list specific company slugs in `config.yaml` (best when you have a target list)
+- **Bootstrapped:** run `bootstrap_companies.py --write` once for the long tail (best when you don't)
+
+Both approaches respect the same `location_filter` / `salary_filter` / `keywords` — they only change *which boards get scraped*.
+
+For deeper customization (the Muse aggregator's categories/levels, pre-rank settings, webhook notifications), see [docs/customizing.md](docs/customizing.md).
+
+## Reading your results
+
+Each row in `results.csv` has a `verdict` column with one of three values:
+
+| Verdict | Score | What it means |
+|---|---|---|
+| `qualified` | 80–100 | You meet ~all stated requirements. Apply with the standard resume. |
+| `stretch` | 50–79 | You meet most requirements with some gaps. Common — most results for any specific role land here. Apply with a tailored resume (`python tailor.py --top 3`) to bridge the gap. |
+| `not_qualified` | 0–49 | Significant gaps. Either the posting isn't a good fit, or your resume isn't surfacing the right experience. |
+
+**Mostly `stretch` is normal.** Job postings list a wish-list of ideal requirements; almost no candidate matches them all. A `stretch` (≥50%) means it's worth applying — *especially* if `ats_score` is also high. Don't read `stretch` as "skip this one."
+
+**Common pattern: `stretch` verdict + low `ats_score` (< 60).** You probably have the experience, but your resume uses different vocabulary than the posting. Fix:
+```bash
+python tailor.py <url>      # rewrites your resume to mirror the posting's wording, never inventing experience
+```
+Tailoring is the #1 reason first-run results feel discouraging.
+
+**Got fewer results than `max_jobs`?** Your filters narrowed the pool below the requested count. Most common causes, in order:
+1. `posted_within_hours` too tight — try `"7d"` instead of `"24h"`
+2. Empty scrape pool — no companies configured AND no bootstrap. Run `python bootstrap_companies.py --write`.
+3. `keywords` too narrow — run `python extract_keywords.py` for resume-tuned suggestions you can paste into config.yaml
+4. `location_filter.cities` missing variants — add full state name + abbreviation + nearby cities
+
+Each filter prints a `N -> M` line in stderr during the run (e.g. `salary filter (>= $85,000 or unstated): 287 -> 142`) so you can see where the pool shrinks.
+
 ## What you get
 
 Each run writes `results.csv` (sorted by qualification score) with columns: `score`, `verdict`, `ats_score`, `title`, `company`, `url`, `posted_at`, `missing` (requirements you don't meet), `matched`, `ats_skills_missing` (skills to add to your resume), `requirements_text` (verbatim from posting), and more. An optional `domain_fit_score` column is also populated when the embeddings extra is installed — see [docs/scoring.md](docs/scoring.md#optional-domain-fit-score) for details.
