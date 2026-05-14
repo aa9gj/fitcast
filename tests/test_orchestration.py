@@ -88,9 +88,55 @@ def test_safe_get_json_handles_network_failure(monkeypatch, capsys):
         raise _r.ConnectionError("dns failed")
 
     monkeypatch.setattr(pipeline.requests, "get", _raise)
+    monkeypatch.setattr(pipeline.time, "sleep", lambda *a, **kw: None)  # no actual sleep in tests
     result = pipeline._safe_get_json("http://x", label="upstream")
     assert result is None
     assert "upstream" in capsys.readouterr().err
+
+
+def test_safe_get_json_retries_once_on_transient_connection_error(monkeypatch):
+    """First call raises ConnectionError, second succeeds. Helper should return data."""
+    import requests as _r
+
+    calls = []
+
+    def _flaky_get(*a, **kw):
+        calls.append(1)
+        if len(calls) == 1:
+            raise _r.ConnectionError("transient dns fail")
+        return _FakeResponse(json_data={"jobs": [{"id": "x"}]})
+
+    monkeypatch.setattr(pipeline.requests, "get", _flaky_get)
+    monkeypatch.setattr(pipeline.time, "sleep", lambda *a, **kw: None)
+    result = pipeline._safe_get_json("http://x", label="upstream")
+    assert result == {"jobs": [{"id": "x"}]}, "retry should have produced the second-call data"
+    assert len(calls) == 2, "should have attempted twice"
+
+
+def test_safe_get_json_does_not_retry_404(monkeypatch):
+    """404s indicate a stale slug, not a transient failure — no retry."""
+    calls = []
+    monkeypatch.setattr(
+        pipeline.requests, "get",
+        lambda *a, **kw: (calls.append(1), _FakeResponse(status_code=404))[1],
+    )
+    monkeypatch.setattr(pipeline.time, "sleep", lambda *a, **kw: None)
+    result = pipeline._safe_get_json("http://x", label="acme")
+    assert result is None
+    assert len(calls) == 1, f"404 should not be retried, but got {len(calls)} attempts"
+
+
+def test_safe_get_json_does_not_retry_500(monkeypatch):
+    """5xx means upstream is reachable but unhappy — also not a retry-worthy transient."""
+    calls = []
+    monkeypatch.setattr(
+        pipeline.requests, "get",
+        lambda *a, **kw: (calls.append(1), _FakeResponse(status_code=500))[1],
+    )
+    monkeypatch.setattr(pipeline.time, "sleep", lambda *a, **kw: None)
+    result = pipeline._safe_get_json("http://x", label="upstream")
+    assert result is None
+    assert len(calls) == 1, f"5xx should not be retried, but got {len(calls)} attempts"
 
 
 # ────────────────────────── _dedupe_by_url ──────────────────────────
