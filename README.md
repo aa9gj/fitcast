@@ -6,8 +6,6 @@
 
 A small CLI that scrapes public job boards, asks Claude to find the requirements section in each posting, and predicts whether your resume qualifies you for the role — with a transparent score derivation, ATS-keyword matching against the O*NET skill ontology, and an option to generate per-job tailored resumes.
 
-**Access note:** the quickstart and Colab badge work for anyone once this repository is public. While the repo is private, clone/Colab access requires GitHub access to `aa9gj/fitcast`; use the local quickstart from an authenticated checkout.
-
 ## Quick start
 
 Requires **Python 3.10+**.
