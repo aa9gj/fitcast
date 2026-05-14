@@ -9,8 +9,8 @@ file at import time.
 Re-run periodically (twice a year) when O*NET publishes a new version.
 
 Usage:
-    python bootstrap_ontologies.py           # download + build with default version
-    python bootstrap_ontologies.py --force   # re-download even if cached
+    python scripts/bootstrap_ontologies.py           # download + build with default version
+    python scripts/bootstrap_ontologies.py --force   # re-download even if cached
 """
 
 from __future__ import annotations

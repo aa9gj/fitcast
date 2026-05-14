@@ -76,7 +76,7 @@ pip install -e ".[dev]"
 pytest tests/
 ```
 
-113 tests covering the score-derivation functions, source validation, state handling, location/salary/time-window filters, and the skill extractor. All pure Python — no API calls.
+146 tests covering the score-derivation functions, source validation, orchestration, bootstrap helpers, state handling, location/salary/time-window filters, and the skill extractor. All pure Python — no API calls.
 
 CI runs the syntax check and tests on Python 3.10, 3.11, and 3.12 via GitHub Actions.
 
