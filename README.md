@@ -41,7 +41,7 @@ The only file you typically edit is [`config.yaml`](config.yaml). Four knobs cov
 location_filter:
   cities: [NC, Raleigh, Durham, Charlotte]   # word-boundary match (safe for short codes like "NC")
   include: [remote, hybrid]                  # substring match (good for general terms)
-  exclude: [india, philippines]              # any match drops the job (wins over include)
+  exclude: [country_name]              # any match drops the job (wins over include)
 
 # Salary range (USD/year). Postings without a stated salary pass through unless filtered explicitly.
 salary_filter:
