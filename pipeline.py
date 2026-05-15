@@ -90,6 +90,12 @@ PRERANK_MAX_TOKENS = 10
 PRERANK_ERROR_SCORE = -1
 ANALYSIS_MAX_TOKENS = 4000
 MIN_JOB_TEXT_CHARS = 100
+# Keyword filter scope. "title" matches role-type keywords against the job
+# title only (precise — the default). "title_and_body" also scans the full
+# description HTML, which makes a multi-keyword OR filter match ~everything
+# (one generic term in boilerplate passes the job). Title-only keeps the
+# first relevance gate actually selective.
+KEYWORD_MATCH_DEFAULT = "title"
 SALARY_FLOOR_USD = 30_000
 SALARY_CEILING_USD = 2_000_000
 WATCH_MIN_INTERVAL_S = 60
@@ -246,6 +252,7 @@ class PipelineConfig(_StrictModel):
     ashby: AshbyConfig | None = None
     muse: MuseConfig | None = None
     keywords: list[str] = Field(default_factory=list)
+    keyword_match: Literal["title", "title_and_body"] = "title"
     max_jobs: int = 10
     posted_within_hours: int | str | None = None
     location_filter: LocationFilterConfig | None = None
@@ -1114,10 +1121,24 @@ def prerank_jobs(
 
 # ───────────────────────────── Scrape orchestrator ──────────────────────────
 
-def matches_keywords(job: dict, keywords: list[str]) -> bool:
+def matches_keywords(
+    job: dict, keywords: list[str], scope: str = KEYWORD_MATCH_DEFAULT
+) -> bool:
+    """True if any keyword substring-matches within `scope`.
+
+    scope="title": match the job TITLE only. A keyword in the title is a
+        real role signal ("Machine Learning Engineer"); the default.
+    scope="title_and_body": match title + full description HTML. Broad —
+        a single generic term in 3000 words of boilerplate passes the job,
+        so the OR-of-many-keywords filter becomes a near-no-op. Legacy
+        behavior, opt-in via config.yaml `keyword_match: title_and_body`.
+    """
     if not keywords:
         return True
-    haystack = (job["title"] + " " + job["content_html"]).lower()
+    if scope == "title_and_body":
+        haystack = (job.get("title", "") + " " + job.get("content_html", "")).lower()
+    else:  # "title" (default) — also the fallback for any unknown value
+        haystack = (job.get("title", "") or "").lower()
     return any(kw.lower() in haystack for kw in keywords)
 
 
@@ -1293,15 +1314,27 @@ def _collect_from_sources(config: dict) -> list[dict]:
 def _apply_filters(jobs: list[dict], config: dict, include_seen: bool) -> list[dict]:
     """Apply keyword + time + location + salary + applied + seen filters."""
     keywords = config.get("keywords") or []
+    scope = config.get("keyword_match") or KEYWORD_MATCH_DEFAULT
     posted_within_hours = config.get("posted_within_hours")
 
     before_kw = len(jobs)
-    filtered = [j for j in jobs if matches_keywords(j, keywords)]
+    filtered = [j for j in jobs if matches_keywords(j, keywords, scope)]
     if keywords:
         print(
-            f"  keyword filter ({len(keywords)} terms): {before_kw} -> {len(filtered)}",
+            f"  keyword filter ({len(keywords)} terms, scope={scope}): "
+            f"{before_kw} -> {len(filtered)}",
             file=sys.stderr,
         )
+        # A multi-keyword OR filter that still passes most of the pool isn't
+        # filtering — it's almost always scope=title_and_body + a generic
+        # term hitting boilerplate. Point at the fix.
+        if scope == "title_and_body" and before_kw and len(filtered) / before_kw > 0.5:
+            print(
+                f"    ⚠ {len(filtered)}/{before_kw} ({100*len(filtered)//before_kw}%) "
+                "passed — body matching + one broad keyword barely filters. "
+                "Set `keyword_match: title` in config.yaml for a precise gate.",
+                file=sys.stderr,
+            )
     else:
         # No keyword filter means every scraped job — regardless of field —
         # flows into prerank/analysis. Almost never intended; the symptom is

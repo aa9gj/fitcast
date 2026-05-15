@@ -60,18 +60,30 @@ muse:
   max_pages: 2  # 20 results per page
 
 # ─── Filtering & cost control ────────────────────────────────────────────
-# Optional case-insensitive substring filter applied to title + body of every
-# scraped job, regardless of source. Empty list = no filter.
+# Case-insensitive substring filter, ORed (a job passes if ANY term matches).
+# Empty list = no filter (every scraped job flows through — almost never what
+# you want; the pipeline warns loudly if this is empty).
+#
+# Prefer role-type terms here — with the default title scope below, these
+# match job TITLES ("Data Scientist", "Computational Biologist").
 keywords:
-  - data
-  - AI
-  - digital
+  - data scientist
+  - data science
+  - computational biolog
   - bioinform
-  - computational
-  - regulatory
-  - product manager
+  - machine learning
   - business analyst
-  - solutions
+  - regulatory
+  - digital transformation
+
+# Where keywords are matched:
+#   title          — match the job TITLE only (default; precise — a keyword
+#                     in the title is a real role signal)
+#   title_and_body — also scan the full description HTML. Broad: one generic
+#                     term in 3000 words of boilerplate passes the job, so a
+#                     multi-keyword OR filter ends up matching ~everything.
+#                     Only use with very distinctive keywords.
+keyword_match: title
 
 # How many jobs to deep-analyze per run with the main model. Cost lever.
 max_jobs: 10

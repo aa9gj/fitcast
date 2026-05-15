@@ -222,7 +222,52 @@ def test_apply_filters_logs_keyword_before_after(monkeypatch, tmp_path, capsys):
     jobs = [_job("a", title="Data Scientist"), _job("b", title="Janitor", html="<p>x</p>")]
     pipeline._apply_filters(jobs, {"keywords": ["data"]}, include_seen=False)
     err = capsys.readouterr().err
-    assert "keyword filter (1 terms): 2 -> 1" in err
+    assert "keyword filter (1 terms, scope=title): 2 -> 1" in err
+
+
+def test_matches_keywords_title_scope_is_default():
+    """Default scope is title-only: a keyword in the body but NOT the title
+    must NOT match (this is the fix for the 96%-pass-through bug)."""
+    job = {"title": "Pharmacy Technician", "content_html": "<p>uses data science daily</p>"}
+    # "data science" is in the body but not the title — title scope rejects it.
+    assert pipeline.matches_keywords(job, ["data science"]) is False
+    # Same job, same keyword, but body scope DOES match.
+    assert pipeline.matches_keywords(job, ["data science"], "title_and_body") is True
+
+
+def test_matches_keywords_title_scope_matches_title():
+    job = {"title": "Senior Data Scientist", "content_html": ""}
+    assert pipeline.matches_keywords(job, ["data scientist"]) is True
+
+
+def test_matches_keywords_unknown_scope_falls_back_to_title():
+    job = {"title": "Janitor", "content_html": "<p>data science</p>"}
+    # Defensive: an unrecognized scope must behave like title (precise),
+    # never silently fall back to the broad body match.
+    assert pipeline.matches_keywords(job, ["data science"], "bogus") is False
+
+
+def test_matches_keywords_empty_list_passes_everything():
+    job = {"title": "Anything", "content_html": ""}
+    assert pipeline.matches_keywords(job, [], "title") is True
+
+
+def test_apply_filters_warns_when_body_scope_barely_filters(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(pipeline, "APPLIED_PATH", tmp_path / "applied.json")
+    monkeypatch.setattr(pipeline, "SEEN_PATH", tmp_path / "seen.json")
+    # All 3 jobs contain "data" in the body → body scope passes all of them.
+    jobs = [
+        _job("a", title="Janitor", html="<p>data driven culture</p>"),
+        _job("b", title="Welder", html="<p>data driven culture</p>"),
+        _job("c", title="Chef", html="<p>data driven culture</p>"),
+    ]
+    pipeline._apply_filters(
+        jobs, {"keywords": ["data"], "keyword_match": "title_and_body"}, include_seen=False
+    )
+    err = capsys.readouterr().err
+    assert "scope=title_and_body" in err
+    assert "barely filters" in err
+    assert "keyword_match: title" in err  # names the fix
 
 
 def test_apply_filters_logs_keyword_disabled_when_empty(monkeypatch, tmp_path, capsys):
@@ -280,12 +325,19 @@ def test_validate_config_accepts_full_realistic_config():
             "max_pages": 3,
         },
         "keywords": ["python"],
+        "keyword_match": "title_and_body",
         "max_jobs": 5,
         "posted_within_hours": "7d",
         "location_filter": {"cities": ["Boston"], "exclude": ["india"]},
         "salary_filter": {"min": 100000, "max": 250000},
         "prerank": {"enabled": True, "threshold": 6, "max_candidates": 50},
     })
+
+
+def test_validate_config_rejects_bad_keyword_match():
+    with pytest.raises(SystemExit) as excinfo:
+        pipeline.validate_config({"keyword_match": "titel"})  # typo
+    assert "keyword_match" in str(excinfo.value)
 
 
 def test_validate_config_rejects_top_level_typo():

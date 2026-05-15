@@ -20,16 +20,26 @@ Comment out (or remove) the line to disable.
 
 ## Filter by keywords
 
-Case-insensitive substring match on title + body:
+Case-insensitive substring filter, ORed — a job passes if **any** term matches.
 
 ```yaml
 keywords:
-  - python
+  - data scientist
+  - computational biolog
   - regulatory
-  - product manager
+keyword_match: title    # "title" (default) or "title_and_body"
 ```
 
-Empty list (`keywords: []`) = no keyword filter.
+**`keyword_match` controls where terms are matched** — this matters a lot:
+
+| Value | Matches against | Behavior |
+|---|---|---|
+| `title` (default) | Job **title** only | Precise. A keyword in the title ("Machine Learning Engineer") is a real role signal. Use role-type terms. |
+| `title_and_body` | Title **+ full description HTML** | Broad. Job descriptions are 3,000+ words of boilerplate; one generic term (`data`, `evidence`, `regulatory`) appears in a huge fraction of *all* postings, so a multi-keyword OR filter matches ~everything and stops filtering. Only safe with very distinctive terms (`GraphRAG`, `Veeva`, `multi-omics`). |
+
+If you see a log line like `keyword filter (51 terms, scope=title_and_body): 69929 -> 67291` (almost nothing filtered), that's the body-matching trap — switch to `keyword_match: title`.
+
+Empty list (`keywords: []`) = no keyword filter at all (the pipeline warns loudly — it's almost never intended).
 
 To get a personalized starting list from your resume:
 
@@ -37,7 +47,7 @@ To get a personalized starting list from your resume:
 python extract_keywords.py
 ```
 
-Outputs a YAML block with profile summary, target roles, and recommended keywords aligned to your background. Copy the `keywords:` portion into config.yaml.
+Outputs a YAML block with profile summary, target roles, and recommended keywords aligned to your background. With the default `title` scope, favor the role-type terms it suggests. Copy the `keywords:` portion into config.yaml.
 
 ## Filter by location
 
