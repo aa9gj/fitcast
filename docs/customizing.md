@@ -2,6 +2,8 @@
 
 Everything's in `config.yaml`. Edit, re-run.
 
+First time? `cp config.example.yaml config.yaml` — your `config.yaml` is git-ignored and yours alone, so editing it never conflicts with `git pull`. The tracked template is `config.example.yaml`; new knobs land there and you copy what you want.
+
 ## Filter to fresh jobs only
 
 ```yaml

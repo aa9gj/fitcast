@@ -24,9 +24,14 @@ pip install -r requirements.txt
 cp resume.example.md resume.md
 $EDITOR resume.md       # paste your real resume in markdown
 
+cp config.example.yaml config.yaml
+$EDITOR config.yaml     # set keywords, location, salary
+
 export ANTHROPIC_API_KEY=sk-ant-...
 python pipeline.py
 ```
+
+`config.yaml` is git-ignored and yours alone — edit it freely; `git pull` will never conflict with it. The tracked template lives in `config.example.yaml`.
 
 Open `results.csv` in Google Sheets — sorted by score, URLs are clickable apply links.
 
@@ -34,7 +39,7 @@ For a reproducible full development environment, use `pip install -r requirement
 
 ## Configure your search
 
-The only file you typically edit is [`config.yaml`](config.yaml). Four knobs cover almost every use case:
+The only file you typically edit is `config.yaml` (your git-ignored copy of [`config.example.yaml`](config.example.yaml)). Four knobs cover almost every use case:
 
 ```yaml
 # Where you want jobs to be:
