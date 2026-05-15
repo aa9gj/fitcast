@@ -381,11 +381,12 @@ def _prerank_job():
     return {"content_html": "<p>" + "Python data role. " * 20 + "</p>", "title": "T", "company": "C"}
 
 
-def test_prerank_rate_limit_returns_fallback_and_tags_distinctly():
+def test_prerank_rate_limit_returns_error_sentinel_and_tags_distinctly():
     pipeline._run_errors.reset()
     client = _RaisingClient(_make_rate_limit_error())
     score = pipeline.prerank_score_one(client, "resume summary", _prerank_job())
-    assert score == pipeline.PRERANK_FALLBACK_SCORE
+    assert score == pipeline.PRERANK_ERROR_SCORE
+    assert score < 0, "error sentinel must be below any valid 0-10 threshold"
     assert pipeline._run_errors.counts.get("prerank:rate_limit") == 1
     assert "prerank:other" not in pipeline._run_errors.counts
 
@@ -394,7 +395,7 @@ def test_prerank_generic_error_tagged_as_other():
     pipeline._run_errors.reset()
     client = _RaisingClient(_make_connection_error())
     score = pipeline.prerank_score_one(client, "resume summary", _prerank_job())
-    assert score == pipeline.PRERANK_FALLBACK_SCORE
+    assert score == pipeline.PRERANK_ERROR_SCORE
     assert pipeline._run_errors.counts.get("prerank:other") == 1
     assert "prerank:rate_limit" not in pipeline._run_errors.counts
 
@@ -407,3 +408,64 @@ def test_run_errors_summary_distinguishes_rate_limit():
     s = pipeline._run_errors.summary()
     assert "prerank:rate_limit: 2" in s
     assert "prerank:other: 1" in s
+
+
+# ───────────────── prerank_jobs selection semantics (the bug fix) ─────────────────
+
+def _scored_job(url: str, html: str = "<p>" + "Python role. " * 20 + "</p>") -> dict:
+    return {"url": url, "title": f"job-{url}", "company": "C", "content_html": html}
+
+
+def test_prerank_jobs_excludes_errored_jobs_from_selection(monkeypatch):
+    """A rate-limited job (sentinel score) must NOT be selected even if it's
+    the only thing left — that was the original bug."""
+    pipeline._run_errors.reset()
+    jobs = [_scored_job("a"), _scored_job("b"), _scored_job("c")]
+
+    # 'a' scores 8 (clean, above threshold), 'b' scores 2 (clean, below),
+    # 'c' errors out (sentinel -1).
+    score_map = {"job-a": 8, "job-b": 2, "job-c": pipeline.PRERANK_ERROR_SCORE}
+    monkeypatch.setattr(
+        pipeline, "prerank_score_one",
+        lambda client, summary, job: score_map[job["title"]],
+    )
+    out = pipeline.prerank_jobs(
+        client=object(), resume="r", jobs=jobs, threshold=5, max_candidates=100,
+    )
+    urls = [j["url"] for j in out]
+    assert urls == ["a"], f"only the clean above-threshold job should pass, got {urls}"
+    assert "c" not in urls, "errored job must never be selected"
+
+
+def test_prerank_jobs_returns_empty_with_diagnostic_when_nothing_clears(monkeypatch, capsys):
+    """When 0 cleanly-scored jobs clear the threshold, return [] (not errored
+    jobs) and print actionable guidance."""
+    pipeline._run_errors.reset()
+    jobs = [_scored_job("a"), _scored_job("b"), _scored_job("c")]
+    # Two clean-but-low scores, one error. Nothing clears threshold 5.
+    score_map = {"job-a": 1, "job-b": 3, "job-c": pipeline.PRERANK_ERROR_SCORE}
+    monkeypatch.setattr(
+        pipeline, "prerank_score_one",
+        lambda client, summary, job: score_map[job["title"]],
+    )
+    out = pipeline.prerank_jobs(
+        client=object(), resume="r", jobs=jobs, threshold=5, max_candidates=100,
+    )
+    assert out == [], "must return nothing rather than fall back to errored/low jobs"
+    err = capsys.readouterr().err
+    assert "Pre-rank selected 0 jobs" in err
+    assert "extract_keywords.py" in err  # points at the #1 lever
+
+
+def test_prerank_jobs_sorts_clean_scores_descending(monkeypatch):
+    pipeline._run_errors.reset()
+    jobs = [_scored_job("low"), _scored_job("high"), _scored_job("mid")]
+    score_map = {"job-low": 6, "job-high": 10, "job-mid": 8}
+    monkeypatch.setattr(
+        pipeline, "prerank_score_one",
+        lambda client, summary, job: score_map[job["title"]],
+    )
+    out = pipeline.prerank_jobs(
+        client=object(), resume="r", jobs=jobs, threshold=5, max_candidates=100,
+    )
+    assert [j["url"] for j in out] == ["high", "mid", "low"]
