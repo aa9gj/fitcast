@@ -66,13 +66,22 @@ MUSE_BASE = "https://www.themuse.com/api/public/jobs"
 HTTP_TIMEOUT_S = 20
 MUSE_MAX_PAGES_DEFAULT = 2
 ASHBY_MAX_PAGES_DEFAULT = 1  # Ashby's posting API returns all jobs in one shot.
-PRERANK_MAX_WORKERS = 10
+# PRERANK_MAX_WORKERS is conservative on purpose. Low-tier Anthropic orgs cap
+# Haiku at 50 requests/minute. With 10 workers the prerank phase burst well
+# past that, the SDK's default 2 retries weren't enough, and ~60% of jobs
+# silently fell back to the neutral score — gutting the funnel. 4 workers +
+# a high client-side retry budget keeps bursts drainable within the cap.
+PRERANK_MAX_WORKERS = 4
 # SCRAPE_MAX_WORKERS is kept conservative because at high parallelism, macOS's
 # mDNSResponder can fail transiently under burst DNS load — 10 workers
 # resolving 800+ unique hosts within a few seconds caused intermittent
 # NameResolutionError on otherwise-healthy networks. 4 is safe; raise it on
 # Linux where DNS bursts are handled fine by systemd-resolved / glibc.
 SCRAPE_MAX_WORKERS = 4
+# Anthropic SDK retry budget. Default is 2; the prerank burst needs more
+# headroom so 429'd calls get retried (with retry-after backoff) instead of
+# falling through to PRERANK_FALLBACK_SCORE.
+ANTHROPIC_MAX_RETRIES = 8
 PRERANK_MAX_TOKENS = 10
 PRERANK_FALLBACK_SCORE = 5
 ANALYSIS_MAX_TOKENS = 4000
@@ -994,12 +1003,21 @@ def prerank_score_one(client: anthropic.Anthropic, resume_summary: str, job: dic
             max_tokens=PRERANK_MAX_TOKENS,
             messages=[{"role": "user", "content": prompt}],
         )
+    except anthropic.RateLimitError as exc:
+        # Reached here only after the SDK exhausted ANTHROPIC_MAX_RETRIES of
+        # retry-after backoff — i.e. the org's req/min cap is genuinely too
+        # low for this pool size. Tagged distinctly so the end-of-run summary
+        # tells the user to slow down / shrink prerank.max_candidates / raise
+        # their tier, rather than implying a generic failure.
+        print(f"    ! prerank rate-limited for {job.get('title','?')!r}", file=sys.stderr)
+        _run_errors.add("prerank:rate_limit")
+        return PRERANK_FALLBACK_SCORE
     except (anthropic.APIError, anthropic.APIConnectionError, anthropic.APITimeoutError, ValueError) as exc:
         # Don't crash the whole batch over one job — return the neutral
         # midpoint so it sorts behind clearer signals. Network blips,
         # transient 5xxs, and malformed responses all land here.
         print(f"    ! prerank failed for {job.get('title','?')!r}: {exc}", file=sys.stderr)
-        _run_errors.add("prerank")
+        _run_errors.add("prerank:other")
         return PRERANK_FALLBACK_SCORE
     text = next((b.text for b in resp.content if b.type == "text"), "").strip()
     m = re.search(r"\d+", text)
@@ -1490,7 +1508,12 @@ def main() -> None:
     # repeat pings for jobs you've already inspected once).
     pre_run_seen_urls = set(load_seen_urls().keys())
 
-    client = anthropic.Anthropic()
+    # max_retries higher than the SDK default (2): the prerank phase issues
+    # many small Haiku calls and low-tier orgs have a 50 req/min cap. The SDK
+    # retries 429s with exponential backoff that respects the `retry-after`
+    # header, so a generous retry budget lets bursts drain cleanly instead of
+    # falling through to the neutral fallback score.
+    client = anthropic.Anthropic(max_retries=ANTHROPIC_MAX_RETRIES)
     jobs = scrape_jobs(config, client, resume, include_seen=args.include_seen)
     print(f"\nSelected {len(jobs)} jobs for deep analysis.\n", file=sys.stderr)
 
@@ -1674,6 +1697,16 @@ def main() -> None:
     summary = _run_errors.summary()
     if summary:
         print(f"\nNote: {summary}", file=sys.stderr)
+        if _run_errors.counts.get("prerank:rate_limit"):
+            print(
+                "  ↳ Hit Anthropic's requests/minute cap during prerank even "
+                "after retries. The prerank ranking is degraded for this run.\n"
+                "    Fixes: lower prerank.max_candidates in config.yaml (e.g. 40), "
+                "set prerank.enabled: false to skip the Haiku pass, or raise your "
+                "Anthropic usage tier. This is a rate limit, not a credit balance "
+                "issue.",
+                file=sys.stderr,
+            )
 
     print(
         f"\nDone. Wrote {len(results)} results to {RESULTS_CSV.name} "

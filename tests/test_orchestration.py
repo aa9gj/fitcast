@@ -346,3 +346,64 @@ def test_webhook_network_failure_does_not_crash(monkeypatch):
         pre_run_seen_urls=set(),
         min_score=70,
     )
+
+
+# ────────────────────── prerank rate-limit error tagging ──────────────────────
+
+def _httpx_request():
+    import httpx
+    return httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+
+
+def _make_rate_limit_error():
+    import httpx
+    resp = httpx.Response(429, request=_httpx_request())
+    return pipeline.anthropic.RateLimitError("rate limited", response=resp, body=None)
+
+
+def _make_connection_error():
+    return pipeline.anthropic.APIConnectionError(request=_httpx_request())
+
+
+class _RaisingClient:
+    """Stand-in anthropic client whose messages.create always raises `exc`."""
+
+    def __init__(self, exc):
+        self._exc = exc
+        self.messages = self
+
+    def create(self, **kwargs):
+        raise self._exc
+
+
+def _prerank_job():
+    # html_to_text must yield a non-empty snippet or prerank short-circuits to 0.
+    return {"content_html": "<p>" + "Python data role. " * 20 + "</p>", "title": "T", "company": "C"}
+
+
+def test_prerank_rate_limit_returns_fallback_and_tags_distinctly():
+    pipeline._run_errors.reset()
+    client = _RaisingClient(_make_rate_limit_error())
+    score = pipeline.prerank_score_one(client, "resume summary", _prerank_job())
+    assert score == pipeline.PRERANK_FALLBACK_SCORE
+    assert pipeline._run_errors.counts.get("prerank:rate_limit") == 1
+    assert "prerank:other" not in pipeline._run_errors.counts
+
+
+def test_prerank_generic_error_tagged_as_other():
+    pipeline._run_errors.reset()
+    client = _RaisingClient(_make_connection_error())
+    score = pipeline.prerank_score_one(client, "resume summary", _prerank_job())
+    assert score == pipeline.PRERANK_FALLBACK_SCORE
+    assert pipeline._run_errors.counts.get("prerank:other") == 1
+    assert "prerank:rate_limit" not in pipeline._run_errors.counts
+
+
+def test_run_errors_summary_distinguishes_rate_limit():
+    pipeline._run_errors.reset()
+    pipeline._run_errors.add("prerank:rate_limit")
+    pipeline._run_errors.add("prerank:rate_limit")
+    pipeline._run_errors.add("prerank:other")
+    s = pipeline._run_errors.summary()
+    assert "prerank:rate_limit: 2" in s
+    assert "prerank:other: 1" in s
