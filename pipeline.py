@@ -34,7 +34,11 @@ from pydantic import BaseModel, Field, ValidationError
 from skill_extractor import get_extractor
 
 ROOT = Path(__file__).parent
+# config.yaml is the user's personal, git-ignored config (copied from the
+# tracked config.example.yaml on first run). Keeping the live file untracked
+# means `git pull` never collides with the user's keyword/location edits.
 CONFIG_PATH = ROOT / "config.yaml"
+CONFIG_EXAMPLE_PATH = ROOT / "config.example.yaml"
 RESUME_PATH = ROOT / "resume.md"
 RESULTS_CSV = ROOT / "results.csv"
 RESULTS_JSON = ROOT / "results.json"
@@ -1585,7 +1589,16 @@ def main() -> None:
     if not RESUME_PATH.exists():
         sys.exit(f"Error: {RESUME_PATH} not found. Copy resume.example.md and edit.")
     if not CONFIG_PATH.exists():
-        sys.exit(f"Error: {CONFIG_PATH} not found.")
+        hint = (
+            f"Error: {CONFIG_PATH.name} not found.\n"
+            f"Create your personal config from the template:\n"
+            f"    cp {CONFIG_EXAMPLE_PATH.name} {CONFIG_PATH.name}\n"
+            f"Then edit {CONFIG_PATH.name} (keywords, location, salary). It's "
+            f"git-ignored, so it won't conflict with future `git pull`s."
+        )
+        if CONFIG_EXAMPLE_PATH.exists():
+            sys.exit(hint)
+        sys.exit(f"Error: neither {CONFIG_PATH.name} nor {CONFIG_EXAMPLE_PATH.name} found.")
 
     config = yaml.safe_load(CONFIG_PATH.read_text()) or {}
     validate_config(config)

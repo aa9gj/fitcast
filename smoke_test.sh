@@ -93,7 +93,7 @@ section "3. Project files"
 for f in pipeline.py audit.py tailor.py track.py extract_keywords.py \
          bootstrap_companies.py scripts/bootstrap_ontologies.py skill_extractor.py \
          check_resume_format.py compare_resumes.py \
-         config.yaml requirements.txt requirements-full.txt requirements.lock \
+         config.example.yaml requirements.txt requirements-full.txt requirements.lock \
          pyproject.toml .github/workflows/ci.yml resume.example.md; do
     if [[ -f "$f" ]]; then
         ok "$f present"
@@ -101,6 +101,12 @@ for f in pipeline.py audit.py tailor.py track.py extract_keywords.py \
         fail "$f missing"
     fi
 done
+
+if [[ -f config.yaml ]]; then
+    info "config.yaml present (your personal config)"
+else
+    info "config.yaml not present — copy it: cp config.example.yaml config.yaml"
+fi
 
 if [[ -f resume.md ]]; then
     info "resume.md present ($(wc -c < resume.md | tr -d ' ') chars)"
@@ -193,13 +199,21 @@ probe_optional "O*NET dl" "https://www.onetcenter.org/dl_files/database/db_28_3_
 
 # ─── 8. Config validates ─────────────────────────────────────────────────
 
-section "8. config.yaml validates"
+section "8. config validates"
 
-if "$PY" -c "import yaml; c = yaml.safe_load(open('config.yaml')); assert c is not None" 2>/dev/null; then
-    ok "config.yaml is valid YAML"
+# Validate the user's config.yaml if present, else the tracked template.
+if [[ -f config.yaml ]]; then
+    CFG_FILE=config.yaml
+else
+    CFG_FILE=config.example.yaml
+fi
+
+if "$PY" -c "import yaml; c = yaml.safe_load(open('$CFG_FILE')); assert c is not None" 2>/dev/null; then
+    ok "$CFG_FILE is valid YAML"
     "$PY" -c "
-import yaml
-c = yaml.safe_load(open('config.yaml')) or {}
+import yaml, pipeline
+c = yaml.safe_load(open('$CFG_FILE')) or {}
+pipeline.validate_config(c)   # schema check (rejects unknown keys / bad enums)
 gh = ((c.get('greenhouse') or {}).get('companies')) or []
 lever = ((c.get('lever') or {}).get('companies')) or []
 ashby = ((c.get('ashby') or {}).get('companies')) or []
@@ -208,11 +222,11 @@ print(f'    greenhouse: {len(gh)} companies')
 print(f'    lever:      {len(lever)} companies')
 print(f'    ashby:      {len(ashby)} companies')
 print(f'    muse:       {\"on\" if muse else \"off\"}')
-print(f'    keywords:   {len(c.get(\"keywords\") or [])}')
+print(f'    keywords:   {len(c.get(\"keywords\") or [])} (scope={c.get(\"keyword_match\", \"title\")})')
 print(f'    max_jobs:   {c.get(\"max_jobs\", \"?\")}')
-"
+" || fail "$CFG_FILE failed schema validation"
 else
-    fail "config.yaml is malformed"
+    fail "$CFG_FILE is malformed"
 fi
 
 # ─── 9. State files (clean handling) ─────────────────────────────────────
