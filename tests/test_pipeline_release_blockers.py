@@ -93,7 +93,7 @@ def test_main_fails_if_all_selected_jobs_fail_analysis(monkeypatch, tmp_path):
     monkeypatch.setattr(pipeline, "scrape_jobs", lambda *args, **kwargs: [_job(1)])
     monkeypatch.setattr(pipeline, "analyze_job", lambda *args, **kwargs: (None, "posting text"))
     monkeypatch.setattr(pipeline, "get_embedding_model", lambda: None)
-    monkeypatch.setattr(pipeline.anthropic, "Anthropic", lambda: object())
+    monkeypatch.setattr(pipeline.anthropic, "Anthropic", lambda *a, **kw: object())
 
     with pytest.raises(SystemExit) as exc:
         pipeline.main()
