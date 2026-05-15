@@ -84,9 +84,16 @@ class TestMatchesKeywords:
     def test_matches_in_title(self):
         assert matches_keywords(self._job("Senior Python Engineer"), ["python"])
 
-    def test_matches_in_content(self):
+    def test_body_keyword_ignored_under_default_title_scope(self):
+        # Default scope is "title": a keyword that appears only in the body
+        # must NOT match. (Body matching made a multi-keyword OR filter pass
+        # ~everything, since JD boilerplate contains nearly any common term.)
         job = self._job("Engineer", "We need someone with regulatory experience.")
-        assert matches_keywords(job, ["regulatory"])
+        assert not matches_keywords(job, ["regulatory"])
+
+    def test_body_keyword_matches_under_explicit_body_scope(self):
+        job = self._job("Engineer", "We need someone with regulatory experience.")
+        assert matches_keywords(job, ["regulatory"], "title_and_body")
 
     def test_case_insensitive(self):
         assert matches_keywords(self._job("PYTHON DEVELOPER"), ["python"])
