@@ -216,6 +216,28 @@ def test_apply_filters_keyword(monkeypatch, tmp_path):
     assert [j["url"] for j in out] == ["a"]
 
 
+def test_apply_filters_logs_keyword_before_after(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(pipeline, "APPLIED_PATH", tmp_path / "applied.json")
+    monkeypatch.setattr(pipeline, "SEEN_PATH", tmp_path / "seen.json")
+    jobs = [_job("a", title="Data Scientist"), _job("b", title="Janitor", html="<p>x</p>")]
+    pipeline._apply_filters(jobs, {"keywords": ["data"]}, include_seen=False)
+    err = capsys.readouterr().err
+    assert "keyword filter (1 terms): 2 -> 1" in err
+
+
+def test_apply_filters_logs_keyword_disabled_when_empty(monkeypatch, tmp_path, capsys):
+    """The bug that caused 'results make no sense' was a silently-empty
+    keyword filter. It must now announce itself loudly."""
+    monkeypatch.setattr(pipeline, "APPLIED_PATH", tmp_path / "applied.json")
+    monkeypatch.setattr(pipeline, "SEEN_PATH", tmp_path / "seen.json")
+    jobs = [_job("a"), _job("b", title="Pharmacy Technician")]
+    out = pipeline._apply_filters(jobs, {}, include_seen=False)
+    assert len(out) == 2, "empty keywords must pass everything (no-op filter)"
+    err = capsys.readouterr().err
+    assert "keyword filter: DISABLED" in err
+    assert "unfiltered by topic" in err
+
+
 def test_apply_filters_skips_applied(monkeypatch, tmp_path):
     applied = tmp_path / "applied.json"
     applied.write_text(json.dumps({"https://a": {}}))
