@@ -1295,7 +1295,22 @@ def _apply_filters(jobs: list[dict], config: dict, include_seen: bool) -> list[d
     keywords = config.get("keywords") or []
     posted_within_hours = config.get("posted_within_hours")
 
+    before_kw = len(jobs)
     filtered = [j for j in jobs if matches_keywords(j, keywords)]
+    if keywords:
+        print(
+            f"  keyword filter ({len(keywords)} terms): {before_kw} -> {len(filtered)}",
+            file=sys.stderr,
+        )
+    else:
+        # No keyword filter means every scraped job — regardless of field —
+        # flows into prerank/analysis. Almost never intended; the symptom is
+        # "the results make no sense." Make the no-op explicit in the log.
+        print(
+            f"  keyword filter: DISABLED (no keywords configured) — "
+            f"all {before_kw} jobs pass, unfiltered by topic",
+            file=sys.stderr,
+        )
 
     posted_hours = parse_time_window(posted_within_hours)
     if posted_hours is not None:
@@ -1553,6 +1568,26 @@ def main() -> None:
             "(enable at least one of: greenhouse.companies, lever.companies, "
             "ashby.companies, or a muse: block)."
         )
+
+    # Empty keyword filter = every scraped job (any field) flows into the
+    # expensive stages. The most common cause of "the results make no sense."
+    # Warn loudly and early — before the long scrape — rather than letting it
+    # fail silently. (A mangled config.yaml from a bad merge is a frequent
+    # way to lose this block without noticing.)
+    if not (config.get("keywords") or []):
+        print(
+            "\n" + "!" * 70 + "\n"
+            "WARNING: no `keywords:` configured in config.yaml.\n"
+            "The keyword filter is the FIRST relevance gate. Without it, EVERY\n"
+            "job in your location + salary band is scraped and ranked, "
+            "regardless\nof field — prerank scores collapse and results look "
+            "random.\n\n"
+            "Fix: add a `keywords:` block (run `python extract_keywords.py` for\n"
+            "resume-tuned terms). Continuing in 3s — Ctrl-C to stop.\n"
+            + "!" * 70,
+            file=sys.stderr,
+        )
+        time.sleep(3)
 
     # Snapshot which URLs are already in seen.json — used at end of run to
     # decide which "top match" results should trigger the webhook (avoiding
