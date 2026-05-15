@@ -437,13 +437,17 @@ def test_prerank_jobs_excludes_errored_jobs_from_selection(monkeypatch):
     assert "c" not in urls, "errored job must never be selected"
 
 
-def test_prerank_jobs_returns_empty_with_diagnostic_when_nothing_clears(monkeypatch, capsys):
-    """When 0 cleanly-scored jobs clear the threshold, return [] (not errored
-    jobs) and print actionable guidance."""
+def test_prerank_jobs_falls_back_to_best_ranked_when_nothing_clears(monkeypatch, capsys):
+    """When no clean job clears the threshold, return the best-ranked clean
+    jobs (best-first) WITH a loud warning — prerank is a sort, not a hard
+    gate. Errored jobs are still excluded; only clean signal is ranked."""
     pipeline._run_errors.reset()
-    jobs = [_scored_job("a"), _scored_job("b"), _scored_job("c")]
-    # Two clean-but-low scores, one error. Nothing clears threshold 5.
-    score_map = {"job-a": 1, "job-b": 3, "job-c": pipeline.PRERANK_ERROR_SCORE}
+    jobs = [_scored_job("a"), _scored_job("b"), _scored_job("c"), _scored_job("d")]
+    # Three clean-but-below-threshold scores + one error. Nothing clears 5.
+    score_map = {
+        "job-a": 1, "job-b": 3, "job-c": 2,
+        "job-d": pipeline.PRERANK_ERROR_SCORE,
+    }
     monkeypatch.setattr(
         pipeline, "prerank_score_one",
         lambda client, summary, job: score_map[job["title"]],
@@ -451,10 +455,29 @@ def test_prerank_jobs_returns_empty_with_diagnostic_when_nothing_clears(monkeypa
     out = pipeline.prerank_jobs(
         client=object(), resume="r", jobs=jobs, threshold=5, max_candidates=100,
     )
-    assert out == [], "must return nothing rather than fall back to errored/low jobs"
+    # Clean jobs returned, ranked best-first (3 > 2 > 1), errored job excluded.
+    assert [j["url"] for j in out] == ["b", "c", "a"]
+    assert "d" not in [j["url"] for j in out], "errored job must stay excluded"
     err = capsys.readouterr().err
-    assert "Pre-rank selected 0 jobs" in err
-    assert "extract_keywords.py" in err  # points at the #1 lever
+    assert "falling back to the best-ranked clean jobs" in err
+    assert "extract_keywords.py" in err  # still points at the #1 root-cause lever
+
+
+def test_prerank_jobs_returns_empty_only_when_all_errored(monkeypatch, capsys):
+    """The one genuine dead-end: every sampled job errored, so there is
+    literally nothing to rank. Return [] with the rate-limit guidance."""
+    pipeline._run_errors.reset()
+    jobs = [_scored_job("a"), _scored_job("b")]
+    monkeypatch.setattr(
+        pipeline, "prerank_score_one",
+        lambda client, summary, job: pipeline.PRERANK_ERROR_SCORE,
+    )
+    out = pipeline.prerank_jobs(
+        client=object(), resume="r", jobs=jobs, threshold=5, max_candidates=100,
+    )
+    assert out == [], "all-errored is the only case that returns nothing"
+    err = capsys.readouterr().err
+    assert "no usable signal at all" in err
 
 
 def test_prerank_jobs_sorts_clean_scores_descending(monkeypatch):

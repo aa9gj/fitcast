@@ -1063,35 +1063,53 @@ def prerank_jobs(
     # pre-rank call happened to 429.
     scored = [j for j in pool if j["prerank_score"] >= 0]
     errored = len(pool) - len(scored)
-    above = [j for j in scored if j["prerank_score"] >= threshold]
-    above.sort(key=lambda j: j["prerank_score"], reverse=True)
+    scored.sort(key=lambda j: j["prerank_score"], reverse=True)
 
-    errored_note = f" ({errored} errored, excluded)" if errored else ""
-    print(
-        f"  -> {len(above)} of {len(scored)} cleanly pre-ranked above "
-        f"threshold {threshold}{errored_note}",
-        file=sys.stderr,
-    )
-
-    if not above:
-        # Honest dead-end. Returning errored jobs here is exactly the bug we
-        # are fixing, so we return nothing and tell the user why — pointing
-        # at the levers that actually matter, in priority order.
+    if not scored:
+        # Every sampled job errored (e.g. hard rate-limit wall). This is the
+        # only genuine dead-end — there's literally nothing to rank.
         print(
-            "\nPre-rank selected 0 jobs. This is almost always search config,\n"
-            "not a bug. In priority order:\n"
-            f"  1. Keywords too broad — {len(scored)} jobs scored, none cleared "
-            f"threshold {threshold}. Run `python extract_keywords.py` for\n"
-            "     resume-tuned keywords (data/AI/solutions match huge noise).\n"
-            "  2. Threshold too high — lower prerank.threshold in config.yaml.\n"
-            + (
-                f"  3. Rate limiting — {errored} jobs errored before they could "
-                "be scored. Lower prerank.max_candidates or raise your tier.\n"
-                if errored else ""
-            ),
+            f"  -> 0 of {len(pool)} cleanly pre-ranked ({errored} errored).\n"
+            "Pre-rank had no usable signal at all — every sampled job's Haiku\n"
+            "call failed. Lower prerank.max_candidates, set prerank.enabled:\n"
+            "false to skip the Haiku pass, or raise your Anthropic tier.",
             file=sys.stderr,
         )
-    return above
+        return []
+
+    above = [j for j in scored if j["prerank_score"] >= threshold]
+    errored_note = f" ({errored} errored, excluded)" if errored else ""
+
+    if above:
+        print(
+            f"  -> {len(above)} of {len(scored)} cleanly pre-ranked above "
+            f"threshold {threshold}{errored_note}",
+            file=sys.stderr,
+        )
+        return above
+
+    # Nothing cleared the threshold, but ranking still has signal. Prerank is
+    # a *sort* to pick what to deep-analyze, not a pass/fail filter — a hard
+    # gate here turns "weak signal" into "zero results" (the cliff). Return
+    # the best-ranked clean jobs anyway; deep analysis + the qualification
+    # score is the real filter. Warn loudly so the user fixes the root cause.
+    top_score = scored[0]["prerank_score"]
+    print(
+        f"  -> 0 of {len(scored)} cleared threshold {threshold}{errored_note}; "
+        f"falling back to the best-ranked clean jobs (top prerank {top_score}/10).\n"
+        "Prerank signal is weak — the pool is mostly noise relative to your\n"
+        "resume. Deep analysis will still filter, but to get better matches:\n"
+        "  1. Run `python extract_keywords.py` — broad keywords (data/AI/\n"
+        "     solutions) flood the pool; resume-tuned ones fix it at the root.\n"
+        "  2. Lower prerank.threshold in config.yaml if you want the gate back.\n"
+        + (
+            f"  3. {errored} jobs rate-limited before scoring — lower "
+            "prerank.max_candidates or raise your tier.\n"
+            if errored else ""
+        ),
+        file=sys.stderr,
+    )
+    return scored
 
 
 # ───────────────────────────── Scrape orchestrator ──────────────────────────
