@@ -80,10 +80,14 @@ PRERANK_MAX_WORKERS = 4
 SCRAPE_MAX_WORKERS = 4
 # Anthropic SDK retry budget. Default is 2; the prerank burst needs more
 # headroom so 429'd calls get retried (with retry-after backoff) instead of
-# falling through to PRERANK_FALLBACK_SCORE.
+# falling through to the error sentinel.
 ANTHROPIC_MAX_RETRIES = 8
 PRERANK_MAX_TOKENS = 10
-PRERANK_FALLBACK_SCORE = 5
+# Sentinel for "couldn't get a real relevance score" (rate-limited, API
+# error, or unparseable response). Distinct from a real 0-10 score so these
+# jobs are EXCLUDED from selection rather than silently passing the
+# threshold on a fake midpoint. Must be < any valid threshold (0-10).
+PRERANK_ERROR_SCORE = -1
 ANALYSIS_MAX_TOKENS = 4000
 MIN_JOB_TEXT_CHARS = 100
 SALARY_FLOOR_USD = 30_000
@@ -1006,23 +1010,24 @@ def prerank_score_one(client: anthropic.Anthropic, resume_summary: str, job: dic
     except anthropic.RateLimitError as exc:
         # Reached here only after the SDK exhausted ANTHROPIC_MAX_RETRIES of
         # retry-after backoff — i.e. the org's req/min cap is genuinely too
-        # low for this pool size. Tagged distinctly so the end-of-run summary
-        # tells the user to slow down / shrink prerank.max_candidates / raise
-        # their tier, rather than implying a generic failure.
+        # low for this pool size. Returns the error sentinel so the job is
+        # EXCLUDED from selection, not silently promoted on a fake score.
         print(f"    ! prerank rate-limited for {job.get('title','?')!r}", file=sys.stderr)
         _run_errors.add("prerank:rate_limit")
-        return PRERANK_FALLBACK_SCORE
+        return PRERANK_ERROR_SCORE
     except (anthropic.APIError, anthropic.APIConnectionError, anthropic.APITimeoutError, ValueError) as exc:
-        # Don't crash the whole batch over one job — return the neutral
-        # midpoint so it sorts behind clearer signals. Network blips,
-        # transient 5xxs, and malformed responses all land here.
+        # Network blips, transient 5xxs, malformed responses. Same treatment:
+        # a job we couldn't rank must not outrank jobs we could.
         print(f"    ! prerank failed for {job.get('title','?')!r}: {exc}", file=sys.stderr)
         _run_errors.add("prerank:other")
-        return PRERANK_FALLBACK_SCORE
+        return PRERANK_ERROR_SCORE
     text = next((b.text for b in resp.content if b.type == "text"), "").strip()
     m = re.search(r"\d+", text)
     if not m:
-        return PRERANK_FALLBACK_SCORE
+        # API succeeded but the response had no parseable integer. Rare;
+        # treat as "no real signal" and exclude rather than guess a midpoint.
+        _run_errors.add("prerank:unparseable")
+        return PRERANK_ERROR_SCORE
     return max(0, min(10, int(m.group(0))))
 
 
@@ -1052,12 +1057,40 @@ def prerank_jobs(
     for job, score in zip(pool, scores):
         job["prerank_score"] = score
 
-    above = [j for j in pool if j["prerank_score"] >= threshold]
+    # Split: jobs we could actually rank vs. jobs that errored (sentinel).
+    # Errored jobs are EXCLUDED — a job we couldn't score must never outrank
+    # one we could, and must never be deep-analyzed just because its cheap
+    # pre-rank call happened to 429.
+    scored = [j for j in pool if j["prerank_score"] >= 0]
+    errored = len(pool) - len(scored)
+    above = [j for j in scored if j["prerank_score"] >= threshold]
     above.sort(key=lambda j: j["prerank_score"], reverse=True)
+
+    errored_note = f" ({errored} errored, excluded)" if errored else ""
     print(
-        f"  -> {len(above)} of {len(pool)} pre-ranked above threshold {threshold}",
+        f"  -> {len(above)} of {len(scored)} cleanly pre-ranked above "
+        f"threshold {threshold}{errored_note}",
         file=sys.stderr,
     )
+
+    if not above:
+        # Honest dead-end. Returning errored jobs here is exactly the bug we
+        # are fixing, so we return nothing and tell the user why — pointing
+        # at the levers that actually matter, in priority order.
+        print(
+            "\nPre-rank selected 0 jobs. This is almost always search config,\n"
+            "not a bug. In priority order:\n"
+            f"  1. Keywords too broad — {len(scored)} jobs scored, none cleared "
+            f"threshold {threshold}. Run `python extract_keywords.py` for\n"
+            "     resume-tuned keywords (data/AI/solutions match huge noise).\n"
+            "  2. Threshold too high — lower prerank.threshold in config.yaml.\n"
+            + (
+                f"  3. Rate limiting — {errored} jobs errored before they could "
+                "be scored. Lower prerank.max_candidates or raise your tier.\n"
+                if errored else ""
+            ),
+            file=sys.stderr,
+        )
     return above
 
 
