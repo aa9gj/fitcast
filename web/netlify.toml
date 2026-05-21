@@ -1,0 +1,18 @@
+# Netlify deploy config for the fitcast web app.
+# In the Netlify UI set the site's "Base directory" to `web` (or deploy from
+# this folder). The official Next.js plugin handles SSR, the route handler,
+# and static assets automatically.
+
+[build]
+  command = "npm run build"
+  publish = ".next"
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+# The posting-fetch function does one upstream HTTP call; give it headroom.
+[functions]
+  included_files = ["public/skills.json"]

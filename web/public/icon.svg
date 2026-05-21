@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="fitcast">
+  <rect width="512" height="512" rx="96" fill="#0d1117"/>
+  <!-- maskable safe zone ~ center 80%; mark kept well inside -->
+  <g fill="none" stroke="#2f81f7" stroke-linecap="round">
+    <circle cx="256" cy="256" r="132" stroke="#21262d" stroke-width="20"/>
+    <!-- forecast arc: the predicted fit sweeping up -->
+    <path d="M256 388 A132 132 0 0 1 145 197" stroke="#2f81f7" stroke-width="20"/>
+  </g>
+  <!-- check / "qualified" tick -->
+  <path d="M206 258 l34 34 l74 -86" fill="none" stroke="#2ea043" stroke-width="22"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

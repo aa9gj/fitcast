@@ -1,0 +1,32 @@
+{
+  "name": "fitcast — forecast your fit for jobs",
+  "short_name": "fitcast",
+  "description": "Scrape job boards, have Claude extract requirements, derive an auditable fit score. Case study + live demo.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0d1117",
+  "theme_color": "#0d1117",
+  "categories": ["productivity", "developer", "utilities"],
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Live demo",
+      "short_name": "Demo",
+      "url": "/demo"
+    }
+  ]
+}
